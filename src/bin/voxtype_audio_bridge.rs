@@ -116,13 +116,13 @@ pub fn run() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
 
-    rt.block_on(run(socket_path, reconnect))
+    rt.block_on(run_bridge(socket_path, reconnect))
 }
 
 /// Top-level connect / read / reconnect loop. Never returns under normal
 /// operation; exits only on a fatal stdout write error (caller closed the
 /// pipe).
-async fn run(socket_path: PathBuf, reconnect: Duration) -> anyhow::Result<()> {
+async fn run_bridge(socket_path: PathBuf, reconnect: Duration) -> anyhow::Result<()> {
     let started = Instant::now();
     // Tracks whether we've already emitted a `disconnected` status line
     // during the current run of "we can't reach the daemon". We avoid
