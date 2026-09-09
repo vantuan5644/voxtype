@@ -9,6 +9,10 @@ pub mod dual_capture;
 #[cfg(feature = "onnx-common")]
 pub mod enhance;
 pub mod feedback;
+#[cfg(unix)]
+pub mod levels;
+#[cfg(target_os = "windows")]
+#[path = "levels_windows.rs"]
 pub mod levels;
 pub mod media;
 pub mod resampler;

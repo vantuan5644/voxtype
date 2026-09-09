@@ -43,6 +43,9 @@
 //! - 3: No `shell.qml` found in any of the resolved directories.
 //! - 1: exec of `qs` failed for some other reason.
 
+#[cfg(unix)]
+#[rustfmt::skip]
+mod unix_impl {
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -55,7 +58,7 @@ const QS_BIN: &str = "qs";
 const SHELL_FILE: &str = "shell.qml";
 const SHELL_SUBDIR: &str = "voxtype/quickshell";
 
-fn main() -> ExitCode {
+pub fn run() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -463,4 +466,17 @@ mod tests {
         fs::write(&other, "").unwrap();
         assert!(dir_with_shell(&other).is_none());
     }
+}
+
+}
+
+#[cfg(unix)]
+fn main() -> std::process::ExitCode {
+    unix_impl::run()
+}
+
+#[cfg(target_os = "windows")]
+fn main() -> std::process::ExitCode {
+    eprintln!("The Wayland OSD launcher is unavailable on Windows.");
+    std::process::ExitCode::FAILURE
 }

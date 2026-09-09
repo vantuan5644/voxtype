@@ -4,8 +4,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::default_true;
-
 /// Hotkey activation mode
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -20,7 +18,7 @@ pub enum ActivationMode {
 /// Hotkey detection configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HotkeyConfig {
-    /// Key name (evdev KEY_* constant name, without the KEY_ prefix)
+    /// Platform key name (evdev KEY_* spelling on Linux)
     /// Examples: "SCROLLLOCK", "RIGHTALT", "PAUSE", "F24"
     #[serde(default = "default_hotkey_key")]
     pub key: String,
@@ -34,10 +32,10 @@ pub struct HotkeyConfig {
     #[serde(default)]
     pub mode: ActivationMode,
 
-    /// Enable built-in hotkey detection (default: true)
+    /// Enable built-in hotkey detection (Windows defaults to false)
     /// Set to false when using compositor keybindings (Hyprland, Sway) instead
     /// When disabled, use `voxtype record start/stop/toggle` to control recording
-    #[serde(default = "default_true")]
+    #[serde(default = "default_hotkey_enabled")]
     pub enabled: bool,
 
     /// Optional cancel key (evdev KEY_* constant name, without KEY_ prefix)
@@ -65,7 +63,7 @@ impl Default for HotkeyConfig {
             key: default_hotkey_key(),
             modifiers: Vec::new(),
             mode: ActivationMode::default(),
-            enabled: true,
+            enabled: default_hotkey_enabled(),
             cancel_key: None,
             model_modifier: None,
             profile_modifiers: HashMap::new(),
@@ -78,16 +76,32 @@ pub(super) fn default_hotkey_key() -> String {
     {
         "FN".to_string()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         "SCROLLLOCK".to_string()
     }
+    #[cfg(target_os = "windows")]
+    {
+        String::new()
+    }
+}
+
+fn default_hotkey_enabled() -> bool {
+    !cfg!(target_os = "windows")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_defaults_to_no_global_hotkey() {
+        let config = HotkeyConfig::default();
+        assert!(!config.enabled);
+        assert!(config.key.is_empty());
+    }
 
     #[test]
     fn test_parse_hotkey_disabled_without_key() {

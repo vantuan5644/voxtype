@@ -19,7 +19,10 @@
 
 use super::binary::{install_active_binary, resolve_active_binary};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::symlink_file as symlink;
 use std::path::Path;
 use std::process::Command;
 

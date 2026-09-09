@@ -1,9 +1,23 @@
 //! `voxtype meeting <action>` — start/stop/pause/resume/status/list/export/show/delete/label/summarize.
 
+#[cfg(unix)]
 use std::path::PathBuf;
-use voxtype::{config, daemon_status::check_daemon_running, meeting, setup, MeetingAction};
+use voxtype::{config, MeetingAction};
+#[cfg(unix)]
+use voxtype::{daemon_status::check_daemon_running, meeting, setup};
 
 /// Run a meeting command
+#[cfg(target_os = "windows")]
+pub(crate) async fn run_meeting_command(
+    config: &config::Config,
+    action: MeetingAction,
+) -> anyhow::Result<()> {
+    let _ = (config, action);
+    anyhow::bail!("Meeting commands are unsupported on Windows");
+}
+
+/// Run a meeting command on platforms that provide meeting capture.
+#[cfg(unix)]
 pub(crate) async fn run_meeting_command(
     config: &config::Config,
     action: MeetingAction,

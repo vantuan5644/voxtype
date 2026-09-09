@@ -5,6 +5,7 @@
 //! - Linux: Uses notify-send (libnotify)
 //! - macOS: Uses terminal-notifier with engine-specific icons
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Stdio;
 
 #[cfg(target_os = "linux")]
@@ -73,7 +74,13 @@ pub async fn send_with_engine(title: &str, body: &str, engine: Option<Transcript
     #[cfg(target_os = "macos")]
     send_macos_native(title, body, engine);
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = engine;
+        send_windows_native(title, body);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         tracing::debug!("Notifications not supported on this platform");
         let _ = (title, body, engine); // Suppress unused warnings
@@ -217,9 +224,15 @@ pub async fn send_status(title: &str, body: &str, urgency: &str, lifetime: Lifet
 /// No-op off Linux: the macOS output drivers post their own completion
 /// notifications through terminal-notifier (see `output/cgevent.rs`), and
 /// there is no freedesktop server to talk to.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub async fn send_status(title: &str, body: &str, urgency: &str, lifetime: Lifetime) {
     let _ = (title, body, urgency, lifetime);
+}
+
+#[cfg(target_os = "windows")]
+pub async fn send_status(title: &str, body: &str, urgency: &str, lifetime: Lifetime) {
+    let _ = (urgency, lifetime);
+    send_windows_native(title, body);
 }
 
 /// Close the notification posted with `Lifetime::UntilClosed`, if one is still
@@ -261,9 +274,14 @@ pub async fn close_persistent() {
     }
 }
 
-/// No-op off Linux, where nothing posts a notification without an expiry.
-#[cfg(not(target_os = "linux"))]
+/// No-op on platforms where status notifications cannot be dismissed.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub async fn close_persistent() {}
+
+#[cfg(target_os = "windows")]
+pub async fn close_persistent() {
+    close_windows_status();
+}
 
 /// Send a macOS notification using terminal-notifier
 /// Falls back to osascript if terminal-notifier is not installed
@@ -362,9 +380,74 @@ pub fn send_sync_with_engine(title: &str, body: &str, engine: Option<Transcripti
     #[cfg(target_os = "macos")]
     send_macos_native(title, body, engine);
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = engine;
+        send_windows_native(title, body);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = (title, body, engine); // Suppress unused warnings
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn send_windows_native(title: &str, body: &str) {
+    use windows::core::HSTRING;
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+
+    fn escape_xml(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    }
+
+    let xml = format!(
+        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+        escape_xml(title),
+        escape_xml(body)
+    );
+    // Tokio workers are ordinary native threads. Initialize WinRT for the
+    // duration of this call; an existing apartment remains usable if Windows
+    // reports that its threading model was already selected.
+    let initialized_here = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
+    let result = (|| -> windows::core::Result<()> {
+        let document = XmlDocument::new()?;
+        document.LoadXml(&HSTRING::from(xml))?;
+        let toast = ToastNotification::CreateToastNotification(&document)?;
+        toast.SetTag(&HSTRING::from("voxtype-status"))?;
+        toast.SetGroup(&HSTRING::from("voxtype"))?;
+        ToastNotificationManager::CreateToastNotifier()?.Show(&toast)
+    })();
+    if initialized_here {
+        unsafe { RoUninitialize() };
+    }
+    if let Err(error) = result {
+        tracing::debug!("Could not send Windows notification: {error}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn close_windows_status() {
+    use windows::core::HSTRING;
+    use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+    use windows::UI::Notifications::ToastNotificationManager;
+
+    let initialized_here = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
+    let result = ToastNotificationManager::History().and_then(|history| {
+        history.RemoveGroupedTag(&HSTRING::from("voxtype-status"), &HSTRING::from("voxtype"))
+    });
+    if initialized_here {
+        unsafe { RoUninitialize() };
+    }
+    if let Err(error) = result {
+        tracing::debug!("Could not dismiss Windows status notification: {error}");
     }
 }
 

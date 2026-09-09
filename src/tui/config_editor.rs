@@ -29,7 +29,7 @@ pub enum EditorError {
     #[error("parse {path}: {source}")]
     Parse {
         path: PathBuf,
-        source: toml_edit::TomlError,
+        source: Box<toml_edit::TomlError>,
     },
     #[error("write {path}: {source}")]
     Write {
@@ -117,7 +117,7 @@ impl ConfigEditor {
         };
         let mut document: DocumentMut = text.parse().map_err(|e| EditorError::Parse {
             path: path.clone(),
-            source: e,
+            source: Box::new(e),
         })?;
 
         // Migration: earlier rc/0.7.0 builds had a bug where `set_string("",

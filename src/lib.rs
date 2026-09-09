@@ -1,11 +1,11 @@
-//! Voxtype: Push-to-talk voice-to-text for Linux
+//! Voxtype: native push-to-talk voice-to-text.
 //!
 //! This library provides the core functionality for:
-//! - Detecting hotkey presses via evdev (kernel-level, works on all compositors)
-//! - Capturing audio via cpal (supports PipeWire, PulseAudio, ALSA)
+//! - Detecting global hotkey presses through platform-native APIs
+//! - Capturing audio through cpal
 //! - Transcribing speech using whisper.cpp (fast, local, offline)
 //! - Processing text (punctuation, replacements, optional LLM post-processing)
-//! - Outputting text via wtype/dotool/ydotool/clipboard fallback chain
+//! - Outputting text through native keyboard and clipboard APIs
 //!
 //! # Architecture
 //!
@@ -19,7 +19,7 @@
 //!                   ▼                        ▼                        ▼
 //!          ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
 //!          │    Hotkey    │         │    Audio     │         │    State     │
-//!          │   (evdev)    │         │    (cpal)    │         │   Manager    │
+//!          │  (platform)  │         │    (cpal)    │         │   Manager    │
 //!          └──────────────┘         └──────────────┘         └──────────────┘
 //!                   │                        │
 //!                   │  key press             │ audio samples
@@ -57,8 +57,8 @@
 //!                                            ▼
 //!                                   ┌──────────────┐
 //!                                   │    Output    │
-//!                                   │wtype/dotool/ │
-//!                                   │ydotool/clip  │
+//!                                   │   native /   │
+//!                                   │  clipboard   │
 //!                                   └──────────────┘
 //!                                            │
 //!                                            ▼
@@ -81,6 +81,8 @@ pub mod error;
 pub mod hotkey;
 #[cfg(target_os = "macos")]
 pub mod hotkey_macos;
+#[cfg(target_os = "windows")]
+pub mod hotkey_windows;
 pub mod meeting;
 #[cfg(target_os = "macos")]
 pub mod menubar;
@@ -89,6 +91,7 @@ pub mod model_manager;
 pub mod notification;
 pub mod osd;
 pub mod output;
+pub mod platform;
 pub mod setup;
 pub mod state;
 pub mod status_json;

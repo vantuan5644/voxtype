@@ -13,7 +13,10 @@
 use serde::Serialize;
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{symlink, PermissionsExt};
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::symlink_file as symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -236,9 +239,12 @@ pub fn install_active_binary(
         })?;
         f.write_all(wrapper.as_bytes())?;
         f.sync_all()?;
-        let mut perms = fs::metadata(active_bin)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(active_bin, perms)?;
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(active_bin)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(active_bin, perms)?;
+        }
     } else {
         symlink(binary_path, active_bin).map_err(|e| {
             anyhow::anyhow!(
@@ -1232,6 +1238,7 @@ mod tests {
     /// filesystem, and a test that assumes one fails there for reasons that
     /// have nothing to do with the code under test. The script ignores its
     /// arguments, so it works under any `/bin/sh`, dash included.
+    #[cfg(unix)]
     #[test]
     fn verify_binary_runs_accepts_a_working_binary() {
         use std::os::unix::fs::PermissionsExt;
@@ -1331,6 +1338,7 @@ mod tests {
         assert_eq!(variant_subdir(""), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn running_variant_reads_the_live_process_not_the_symlink() {
         // Our own pid: /proc/self/exe is the test harness, which is not a

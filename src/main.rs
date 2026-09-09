@@ -1,4 +1,4 @@
-//! Voxtype - Push-to-talk voice-to-text for Linux
+//! Voxtype - native push-to-talk voice-to-text.
 //!
 //! Run with `voxtype` or `voxtype daemon` to start the daemon.
 //! Use `voxtype setup` to check dependencies and download models.

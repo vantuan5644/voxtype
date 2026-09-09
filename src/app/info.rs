@@ -86,6 +86,18 @@ fn run_devices(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn run_device_names(json: bool) -> anyhow::Result<()> {
+    let found = devices::enumerate_input_devices();
+    if json {
+        println!("{}", serde_json::to_string(&found)?);
+    } else {
+        for name in found {
+            println!("{name}");
+        }
+    }
+    Ok(())
+}
+
 /// One model's line in the listing, with whatever the integrity checks found.
 struct ModelStatus {
     name: &'static str,

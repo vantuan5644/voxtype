@@ -32,7 +32,14 @@
 
 use std::env;
 use std::fs;
-use std::os::unix::fs as unix_fs;
+#[cfg(unix)]
+use std::os::unix::fs as platform_fs;
+#[cfg(target_os = "windows")]
+mod platform_fs {
+    pub fn symlink(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, target)
+    }
+}
 use std::path::{Path, PathBuf};
 
 use crate::error::VoxtypeError;
@@ -374,7 +381,7 @@ pub fn install_bridge_symlink(
         }
     }
 
-    unix_fs::symlink(source, target).map_err(|e| {
+    platform_fs::symlink(source, target).map_err(|e| {
         VoxtypeError::Config(format!(
             "Failed to symlink {} -> {}: {}",
             target.display(),
@@ -844,6 +851,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_bridge_symlink_refuses_outside_home_without_force() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

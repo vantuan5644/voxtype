@@ -45,6 +45,9 @@
 //! existing OSD frontends), but the flag is parsed so callers can wire
 //! it through without code changes when we add exponential backoff.
 
+#[cfg(unix)]
+#[rustfmt::skip]
+mod unix_impl {
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -88,7 +91,7 @@ struct Args {
     reconnect_max_secs: u64,
 }
 
-fn main() -> anyhow::Result<()> {
+pub fn run() -> anyhow::Result<()> {
     // Tracing goes to stderr only; stdout is reserved for NDJSON output.
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
@@ -305,4 +308,16 @@ mod tests {
         assert!(quiet_line.contains("\"vad\":0"));
         assert!(loud_line.contains("\"vad\":1"));
     }
+}
+
+}
+
+#[cfg(unix)]
+fn main() -> anyhow::Result<()> {
+    unix_impl::run()
+}
+
+#[cfg(target_os = "windows")]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("The Unix audio bridge is unavailable on Windows")
 }

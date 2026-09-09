@@ -38,6 +38,9 @@
 //! exec the Quickshell launcher, it appends `--no-daemonize` to the
 //! launcher's args so qs stays in the foreground.
 
+#[cfg(unix)]
+#[rustfmt::skip]
+mod unix_impl {
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -50,7 +53,7 @@ const NATIVE_BIN: &str = "voxtype-osd-native";
 const GTK4_BIN: &str = "voxtype-osd-gtk4";
 const QUICKSHELL_BIN: &str = "voxtype-osd-quickshell";
 
-fn main() -> ExitCode {
+pub fn run() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -389,4 +392,17 @@ mod tests {
         assert_eq!(f, None);
         assert!(rest.is_empty());
     }
+}
+
+}
+
+#[cfg(unix)]
+fn main() -> std::process::ExitCode {
+    unix_impl::run()
+}
+
+#[cfg(target_os = "windows")]
+fn main() -> std::process::ExitCode {
+    eprintln!("The Wayland OSD launcher is unavailable on Windows.");
+    std::process::ExitCode::FAILURE
 }

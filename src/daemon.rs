@@ -12,6 +12,8 @@ use crate::error::Result;
 use crate::hotkey::{self, HotkeyEvent};
 #[cfg(target_os = "macos")]
 use crate::hotkey_macos::{self as hotkey, HotkeyEvent};
+#[cfg(target_os = "windows")]
+use crate::hotkey_windows::{self as hotkey, HotkeyEvent};
 use crate::meeting::{self, MeetingDaemon, MeetingEvent, StorageConfig};
 use crate::model_manager::ModelManager;
 use crate::notification::{self, Lifetime};
@@ -22,11 +24,89 @@ use crate::output::TextOutput;
 use crate::state::{ChunkResult, State};
 use crate::text::TextProcessor;
 use crate::transcribe::{StreamHandle, StreamingEvent, Transcriber};
+#[cfg(unix)]
 use pidlock::Pidlock;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::signal::unix::{signal, SignalKind};
+#[cfg(unix)]
+use tokio::signal::unix::{signal, Signal, SignalKind};
+
+#[cfg(unix)]
+async fn wait_record_start(signal: &mut Signal) {
+    let _ = signal.recv().await;
+}
+
+#[cfg(unix)]
+async fn wait_record_stop(signal: &mut Signal) {
+    let _ = signal.recv().await;
+}
+
+#[cfg(unix)]
+async fn wait_termination(signal: &mut Signal) {
+    let _ = signal.recv().await;
+}
+
+#[cfg(target_os = "windows")]
+async fn wait_runtime_trigger(name: &str) {
+    let path = Config::runtime_dir().join(name);
+    loop {
+        if path.exists() && std::fs::remove_file(&path).is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn wait_record_start(_signal: &mut ()) {
+    wait_runtime_trigger("record_start").await;
+}
+
+#[cfg(target_os = "windows")]
+async fn wait_record_stop(_signal: &mut ()) {
+    wait_runtime_trigger("record_stop").await;
+}
+
+#[cfg(target_os = "windows")]
+async fn wait_termination(_signal: &mut ()) {
+    std::future::pending::<()>().await;
+}
+
+#[cfg(unix)]
+async fn wait_interrupt() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(target_os = "windows")]
+async fn wait_interrupt() {
+    use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown};
+
+    let (
+        Ok(mut ctrl_c),
+        Ok(mut ctrl_break),
+        Ok(mut ctrl_close),
+        Ok(mut ctrl_logoff),
+        Ok(mut ctrl_shutdown),
+    ) = (
+        ctrl_c(),
+        ctrl_break(),
+        ctrl_close(),
+        ctrl_logoff(),
+        ctrl_shutdown(),
+    )
+    else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    tokio::select! {
+        _ = ctrl_c.recv() => {}
+        _ = ctrl_break.recv() => {}
+        _ = ctrl_close.recv() => {}
+        _ = ctrl_logoff.recv() => {}
+        _ = ctrl_shutdown.recv() => {}
+    }
+}
 
 /// Send a desktop notification with optional engine icon
 async fn send_notification(
@@ -82,6 +162,12 @@ async fn send_notification_with_lifetime(
         let _ = (urgency, lifetime);
         let engine_for_icon = if show_engine_icon { Some(engine) } else { None };
         notification::send_with_engine(&title, body, engine_for_icon).await;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (show_engine_icon, engine);
+        notification::send_status(&title, body, urgency, lifetime).await;
     }
 }
 
@@ -812,6 +898,7 @@ pub struct Daemon {
     streaming_drain_pump: Option<tokio::task::JoinHandle<()>>,
     /// OSD child supervisor task. Holds the JoinHandle so dropping it (on
     /// daemon shutdown) kill_on_drop's the spawned voxtype-osd process.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     osd_supervisor_task: Option<tokio::task::JoinHandle<()>>,
     // Model manager for multi-model support
     model_manager: Option<ModelManager>,
@@ -2647,6 +2734,22 @@ impl Daemon {
 
     /// Run the daemon main loop
     pub async fn run(&mut self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        if self.config.meeting.enabled {
+            tracing::warn!("Meeting mode is unavailable on Windows; disabling it for this daemon");
+            self.config.meeting.enabled = false;
+        }
+
+        let lock_path = Config::runtime_dir().join("voxtype.lock");
+        // Acquire the Windows singleton before touching shared request or PID
+        // files. A second launch must leave the active daemon's state intact.
+        #[cfg(target_os = "windows")]
+        let _daemon_instance = crate::platform::DaemonInstance::acquire(&lock_path).map_err(|e| {
+            crate::error::VoxtypeError::Config(format!(
+                "Another VoxType instance is already running, or the daemon lock could not be created: {e}"
+            ))
+        })?;
+
         tracing::info!("Starting voxtype daemon");
 
         // Engine-vs-binary mismatch check at startup so users see a desktop
@@ -2681,6 +2784,12 @@ impl Daemon {
         // Clean up any stale cancel and profile override files from previous runs
         cleanup_cancel_file();
         cleanup_profile_override();
+        #[cfg(target_os = "windows")]
+        {
+            let runtime = Config::runtime_dir();
+            let _ = std::fs::remove_file(runtime.join("record_start"));
+            let _ = std::fs::remove_file(runtime.join("record_stop"));
+        }
 
         // Clean up any stale meeting command files
         cleanup_meeting_files();
@@ -2692,15 +2801,20 @@ impl Daemon {
         self.pid_file_path = write_pid_file();
 
         // Set up signal handlers for external control
+        #[cfg(unix)]
         let mut sigusr1 = signal(SignalKind::user_defined1()).map_err(|e| {
             crate::error::VoxtypeError::Config(format!("Failed to set up SIGUSR1 handler: {}", e))
         })?;
+        #[cfg(unix)]
         let mut sigusr2 = signal(SignalKind::user_defined2()).map_err(|e| {
             crate::error::VoxtypeError::Config(format!("Failed to set up SIGUSR2 handler: {}", e))
         })?;
+        #[cfg(unix)]
         let mut sigterm = signal(SignalKind::terminate()).map_err(|e| {
             crate::error::VoxtypeError::Config(format!("Failed to set up SIGTERM handler: {}", e))
         })?;
+        #[cfg(target_os = "windows")]
+        let (mut sigusr1, mut sigusr2, mut sigterm) = ((), (), ());
 
         // Ensure required directories exist
         Config::ensure_directories().map_err(|e| {
@@ -2710,33 +2824,39 @@ impl Daemon {
         // Start the audio-level broadcaster for the OSD. Failure to bind
         // the socket is not fatal: the daemon still runs without an OSD
         // feed, and downstream code treats `level_hub == None` as "no OSD".
-        let level_socket = audio::levels::default_socket_path();
-        match audio::levels::LevelHub::start(level_socket.clone()).await {
-            Ok(hub) => {
-                tracing::info!("OSD audio level socket: {:?}", hub.socket_path());
-                self.level_hub = Some(hub);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Could not start OSD audio level socket at {:?}: {}",
-                    level_socket,
-                    e
-                );
+        #[cfg(unix)]
+        {
+            let level_socket = audio::levels::default_socket_path();
+            match audio::levels::LevelHub::start(level_socket.clone()).await {
+                Ok(hub) => {
+                    tracing::info!("OSD audio level socket: {:?}", hub.socket_path());
+                    self.level_hub = Some(hub);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not start OSD audio level socket at {:?}: {}",
+                        level_socket,
+                        e
+                    );
+                }
             }
         }
 
         // Spawn the OSD child if enabled and the level socket bound. Without
         // the socket the frontend has nothing to render, so skip the spawn
         // rather than burning a slot in the launcher's restart logic.
+        #[cfg(unix)]
         if self.config.osd.enabled && self.level_hub.is_some() {
             self.osd_supervisor_task = Some(crate::osd::supervisor::spawn());
         }
 
         // Check if another instance is already running (single-instance safeguard)
-        let lock_path = Config::runtime_dir().join("voxtype.lock");
+        #[cfg(unix)]
         let lock_path_str = lock_path.to_string_lossy().to_string();
+        #[cfg(unix)]
         let mut pidlock = Pidlock::new(&lock_path_str);
 
+        #[cfg(unix)]
         match pidlock.acquire() {
             Ok(_) => {
                 tracing::debug!("Acquired PID lock at {:?}", lock_path);
@@ -2775,7 +2895,6 @@ impl Daemon {
                 }
             }
         }
-
         // Only now that the lock is ours: a refused second instance must not
         // overwrite the running daemon's answer with its own version.
         crate::daemon_status::publish_version();
@@ -2804,7 +2923,7 @@ impl Daemon {
             }
         }
 
-        // Initialize hotkey listener (Linux: evdev, macOS: rdev)
+        // Initialize the platform hotkey listener.
         #[cfg(target_os = "linux")]
         let mut hotkey_listener: Option<Box<dyn hotkey::HotkeyListener>> =
             if self.config.hotkey.enabled {
@@ -2842,7 +2961,20 @@ impl Daemon {
             );
             None
         };
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(target_os = "windows")]
+        let mut hotkey_listener: Option<Box<dyn hotkey::HotkeyListener>> =
+            if self.config.hotkey.enabled {
+                tracing::info!("Hotkey: {}", self.config.hotkey.key);
+                let secondary_model = self.config.whisper.secondary_model.clone();
+                Some(hotkey::create_listener(
+                    &self.config.hotkey,
+                    secondary_model,
+                )?)
+            } else {
+                tracing::info!("Built-in hotkey disabled; use 'voxtype record' commands");
+                None
+            };
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let hotkey_listener: Option<()> = {
             if self.config.hotkey.enabled {
                 tracing::warn!(
@@ -2910,7 +3042,7 @@ impl Daemon {
         self.model_manager = Some(model_manager);
 
         // Start hotkey listener (if enabled)
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let mut hotkey_rx = if let Some(ref mut listener) = hotkey_listener {
             match listener.start() {
                 Ok(rx) => Some(rx),
@@ -2922,7 +3054,7 @@ impl Daemon {
         } else {
             None
         };
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let mut hotkey_rx: Option<tokio::sync::mpsc::Receiver<HotkeyEvent>> = None;
 
         // Current state
@@ -3657,7 +3789,7 @@ impl Daemon {
                 }
 
                 // Handle SIGUSR1 - start recording (for compositor keybindings)
-                _ = sigusr1.recv() => {
+                _ = wait_record_start(&mut sigusr1) => {
                     tracing::debug!("Received SIGUSR1 (start recording)");
                     if state.is_idle() {
                         // Read model override from file (set by `voxtype record start --model X`)
@@ -3782,7 +3914,7 @@ impl Daemon {
                 }
 
                 // Handle SIGUSR2 - stop recording (for compositor keybindings)
-                _ = sigusr2.recv() => {
+                _ = wait_record_stop(&mut sigusr2) => {
                     tracing::debug!("Received SIGUSR2 (stop recording)");
                     if state.is_streaming() {
                         tracing::info!("SIGUSR2 stop while streaming; closing capture and disowning session");
@@ -4159,13 +4291,13 @@ impl Daemon {
                 }
 
                 // Handle graceful shutdown (SIGINT from Ctrl+C)
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("Received SIGINT, shutting down...");
+                _ = wait_interrupt() => {
+                    tracing::info!("Received shutdown request, shutting down...");
                     break;
                 }
 
                 // Handle graceful shutdown (SIGTERM from systemctl stop)
-                _ = sigterm.recv() => {
+                _ = wait_termination(&mut sigterm) => {
                     tracing::info!("Received SIGTERM, shutting down...");
                     break;
                 }
@@ -4189,11 +4321,11 @@ impl Daemon {
         }
 
         // Cleanup hotkey listener
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         if let Some(mut listener) = hotkey_listener {
             let _ = listener.stop(); // Best effort cleanup
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let _ = hotkey_listener; // Silence unused variable warning
 
         // Abort any pending transcription task
@@ -4230,6 +4362,8 @@ impl Daemon {
         if let Some(ref path) = self.pid_file_path {
             cleanup_pid_file(path);
         }
+        #[cfg(target_os = "windows")]
+        cleanup_pid_file(&lock_path);
 
         // Remove the OSD audio level socket so a stale path doesn't
         // confuse the next daemon start.
@@ -4602,6 +4736,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_pidlock_acquisition_succeeds() {
         with_test_runtime_dir(|dir| {
@@ -4616,6 +4751,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_pidlock_blocks_second_instance() {
         with_test_runtime_dir(|dir| {
@@ -4634,6 +4770,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_pidlock_released_on_drop() {
         with_test_runtime_dir(|dir| {
@@ -4660,6 +4797,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_stale_lockfile_cleanup() {
         with_test_runtime_dir(|dir| {
@@ -4677,6 +4815,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_stale_lockfile_not_cleaned_if_pid_running() {
         with_test_runtime_dir(|dir| {

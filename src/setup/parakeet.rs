@@ -145,39 +145,46 @@ fn detect_best_parakeet_backend() -> Option<ParakeetBackend> {
 }
 
 /// Detect the host's CUDA runtime major version by dlopen'ing libcudart.
-/// Returns Some(12), Some(13), or None if CUDA isn't installed or the probe
+/// Returns Some(12), Some(13), or None if CUDA isn't installed or the lookup
 /// fails. Used by detect_best_parakeet_backend to pick between voxtype-onnx-cuda-12
 /// and voxtype-onnx-cuda-13 based on what the host can actually run.
 pub fn detect_cuda_runtime_major() -> Option<i32> {
-    use std::ffi::CString;
-    let candidates = ["libcudart.so", "libcudart.so.13", "libcudart.so.12"];
-    let handle = candidates.iter().find_map(|name| {
-        let cstr = CString::new(*name).ok()?;
-        let h = unsafe { libc::dlopen(cstr.as_ptr(), libc::RTLD_LAZY) };
-        if h.is_null() {
-            None
-        } else {
-            Some(h)
+    #[cfg(not(unix))]
+    {
+        None
+    }
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        let candidates = ["libcudart.so", "libcudart.so.13", "libcudart.so.12"];
+        let handle = candidates.iter().find_map(|name| {
+            let cstr = CString::new(*name).ok()?;
+            let h = unsafe { libc::dlopen(cstr.as_ptr(), libc::RTLD_LAZY) };
+            if h.is_null() {
+                None
+            } else {
+                Some(h)
+            }
+        })?;
+
+        let sym_name = CString::new("cudaRuntimeGetVersion").ok()?;
+        let sym = unsafe { libc::dlsym(handle, sym_name.as_ptr()) };
+        if sym.is_null() {
+            unsafe { libc::dlclose(handle) };
+            return None;
         }
-    })?;
 
-    let sym_name = CString::new("cudaRuntimeGetVersion").ok()?;
-    let sym = unsafe { libc::dlsym(handle, sym_name.as_ptr()) };
-    if sym.is_null() {
+        type CudaRuntimeGetVersion = unsafe extern "C" fn(*mut i32) -> i32;
+        let get_version: CudaRuntimeGetVersion = unsafe { std::mem::transmute(sym) };
+        let mut version: i32 = 0;
+        let result = unsafe { get_version(&mut version) };
         unsafe { libc::dlclose(handle) };
-        return None;
-    }
 
-    type CudaRuntimeGetVersion = unsafe extern "C" fn(*mut i32) -> i32;
-    let get_version: CudaRuntimeGetVersion = unsafe { std::mem::transmute(sym) };
-    let mut version: i32 = 0;
-    let result = unsafe { get_version(&mut version) };
-    unsafe { libc::dlclose(handle) };
-
-    if result != 0 {
-        return None;
+        if result != 0 {
+            return None;
+        }
+        Some(version / 1000)
     }
-    Some(version / 1000)
 }
 
 pub fn show_status() {

@@ -204,20 +204,34 @@ impl Config {
                 return Some(user);
             }
         }
-        let system = Self::system_path();
-        if system.exists() {
-            return Some(system);
+        #[cfg(unix)]
+        {
+            let system = Self::system_path();
+            if system.exists() {
+                return Some(system);
+            }
         }
         None
     }
 
     /// Get the runtime directory for ephemeral files (state, sockets)
     pub fn runtime_dir() -> PathBuf {
-        // Use XDG_RUNTIME_DIR if available, otherwise fall back to /tmp
-        std::env::var("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"))
-            .join("voxtype")
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("VoxType")
+                .join("runtime")
+        }
+        #[cfg(unix)]
+        {
+            // Use XDG_RUNTIME_DIR if available, otherwise fall back to /tmp
+            std::env::var("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/tmp"))
+                .join("voxtype")
+        }
     }
 
     /// Resolve the state file path from config
@@ -237,27 +251,49 @@ impl Config {
     /// `~/.config`) on every platform including macOS, where the `directories`
     /// crate would use `~/Library/Application Support` and ignore XDG (#448).
     pub fn config_dir() -> Option<PathBuf> {
-        Self::xdg_dir(
-            "XDG_CONFIG_HOME",
-            ".config",
-            directories::ProjectDirs::from("", "", "voxtype").map(|d| d.config_dir().to_path_buf()),
-        )
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .map(|base| base.join("VoxType"))
+        }
+        #[cfg(unix)]
+        {
+            Self::xdg_dir(
+                "XDG_CONFIG_HOME",
+                ".config",
+                directories::ProjectDirs::from("", "", "voxtype")
+                    .map(|d| d.config_dir().to_path_buf()),
+            )
+        }
     }
 
     /// Voxtype's user data directory (parent of the models dir), honoring
     /// `$XDG_DATA_HOME` (default `~/.local/share`); same scheme as [`Config::config_dir`].
     pub fn data_dir() -> PathBuf {
-        Self::xdg_dir(
-            "XDG_DATA_HOME",
-            ".local/share",
-            directories::ProjectDirs::from("", "", "voxtype").map(|d| d.data_dir().to_path_buf()),
-        )
-        .unwrap_or_else(|| PathBuf::from("."))
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("VoxType")
+        }
+        #[cfg(unix)]
+        {
+            Self::xdg_dir(
+                "XDG_DATA_HOME",
+                ".local/share",
+                directories::ProjectDirs::from("", "", "voxtype")
+                    .map(|d| d.data_dir().to_path_buf()),
+            )
+            .unwrap_or_else(|| PathBuf::from("."))
+        }
     }
 
     /// Resolve a `voxtype` user dir. An explicit absolute `$xdg_var` wins;
     /// otherwise `$HOME/<default_rel>/voxtype`. Falls back to an existing
     /// `legacy` platform-native dir so an upgrade never orphans a prior install.
+    #[cfg(unix)]
     fn xdg_dir(xdg_var: &str, default_rel: &str, legacy: Option<PathBuf>) -> Option<PathBuf> {
         if let Some(base) = std::env::var_os(xdg_var)
             .map(PathBuf::from)
@@ -501,6 +537,7 @@ mod tests {
         assert_eq!(Config::SYSTEM_PATH, "/etc/voxtype/config.toml");
     }
 
+    #[cfg(unix)]
     #[test]
     fn xdg_dir_resolution() {
         // Mutates $HOME / $XDG_CONFIG_HOME, like the other env tests here.

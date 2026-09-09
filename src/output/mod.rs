@@ -21,22 +21,32 @@
 
 #[cfg(target_os = "macos")]
 pub mod cgevent;
+#[cfg(unix)]
 pub mod clipboard;
+#[cfg(unix)]
 pub mod dotool;
+#[cfg(unix)]
 pub mod eitype;
 // modifier_guard is evdev-based; macOS has its own osascript modifier handling.
 #[cfg(target_os = "linux")]
 pub mod modifier_guard;
 #[cfg(target_os = "macos")]
 pub mod osascript;
+#[cfg(unix)]
 pub mod paste;
 #[cfg(target_os = "macos")]
 pub mod pbcopy;
 pub mod post_process;
+#[cfg(unix)]
 pub mod session;
 pub mod streaming;
+#[cfg(target_os = "windows")]
+pub mod windows;
+#[cfg(unix)]
 pub mod wtype;
+#[cfg(unix)]
 pub mod xclip;
+#[cfg(unix)]
 pub mod ydotool;
 
 pub use streaming::StreamingSession;
@@ -45,7 +55,9 @@ use crate::config::{OutputConfig, OutputDriver};
 use crate::error::OutputError;
 use std::borrow::Cow;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -61,6 +73,7 @@ use tokio::process::Command;
 /// 2. `$XDG_RUNTIME_DIR/.ydotool_socket` (ydotool CLI default)
 /// 3. `/tmp/.ydotool_socket` (Fedora / systemd-wide service)
 /// 4. `/run/user/$UID/.ydotool_socket` (fallback if XDG_RUNTIME_DIR unset)
+#[cfg(target_os = "linux")]
 pub fn find_ydotool_socket() -> Option<PathBuf> {
     let candidates: Vec<PathBuf> = {
         let mut paths = Vec::new();
@@ -239,7 +252,7 @@ pub trait TextOutput: Send + Sync {
 }
 
 /// Default driver order for type mode
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const DEFAULT_DRIVER_ORDER: &[OutputDriver] = &[
     OutputDriver::Wtype,
     OutputDriver::Eitype,
@@ -250,7 +263,7 @@ const DEFAULT_DRIVER_ORDER: &[OutputDriver] = &[
 ];
 
 /// Create a TextOutput implementation for a specific driver
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn create_driver_output(
     driver: OutputDriver,
     config: &OutputConfig,
@@ -308,6 +321,8 @@ pub fn create_output_chain_with_override(
     let mut chain: Vec<Box<dyn TextOutput>> = Vec::new();
     #[cfg(target_os = "macos")]
     let _ = driver_override;
+    #[cfg(target_os = "windows")]
+    let _ = driver_override;
 
     // Get effective pre_type_delay_ms (handles deprecated wtype_delay_ms)
     let pre_type_delay_ms = config.effective_pre_type_delay_ms();
@@ -339,7 +354,7 @@ pub fn create_output_chain_with_override(
                 }
             }
 
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             {
                 // Determine driver order: CLI override > config > default
                 let driver_order: &[OutputDriver] = driver_override
@@ -371,6 +386,21 @@ pub fn create_output_chain_with_override(
                     )));
                 }
             }
+
+            #[cfg(target_os = "windows")]
+            {
+                chain.push(Box::new(windows::WindowsTypingOutput::new(
+                    config.auto_submit,
+                    config.append_text.clone(),
+                    config.type_delay_ms,
+                    pre_type_delay_ms,
+                )));
+                // If held modifiers make synthetic typing unsafe, retain the
+                // transcription on the clipboard instead of losing it.
+                chain.push(Box::new(windows::WindowsClipboardOutput::new(
+                    config.append_text.clone(),
+                )));
+            }
         }
         crate::config::OutputMode::Clipboard => {
             #[cfg(target_os = "macos")]
@@ -378,7 +408,7 @@ pub fn create_output_chain_with_override(
                 config.notification.on_transcription,
             )));
 
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             {
                 // Clipboard with X11 fallback: wl-copy first, then xclip
                 chain.push(Box::new(clipboard::ClipboardOutput::new(
@@ -388,9 +418,14 @@ pub fn create_output_chain_with_override(
                     config.append_text.clone(),
                 )));
             }
+            #[cfg(target_os = "windows")]
+            chain.push(Box::new(windows::WindowsClipboardOutput::new(
+                config.append_text.clone(),
+            )));
         }
         crate::config::OutputMode::Paste => {
             // Only paste mode (no fallback as requested)
+            #[cfg(target_os = "linux")]
             chain.push(Box::new(paste::PasteOutput::new(
                 config.auto_submit,
                 config.append_text.clone(),
@@ -400,6 +435,18 @@ pub fn create_output_chain_with_override(
                 config.restore_clipboard,
                 config.restore_clipboard_delay_ms,
             )));
+            #[cfg(target_os = "macos")]
+            chain.push(Box::new(osascript::OsascriptOutput::new(
+                config.notification.on_transcription,
+                config.auto_submit,
+                pre_type_delay_ms,
+            )));
+            #[cfg(target_os = "windows")]
+            chain.push(Box::new(windows::WindowsPasteOutput::new(
+                config.auto_submit,
+                config.append_text.clone(),
+                pre_type_delay_ms,
+            )));
         }
         crate::config::OutputMode::File => {
             // File output is handled in the daemon before reaching the output chain.
@@ -407,7 +454,14 @@ pub fn create_output_chain_with_override(
             tracing::warn!(
                 "Output mode is 'file' but no file_path configured. Falling back to clipboard."
             );
+            #[cfg(target_os = "linux")]
             chain.push(Box::new(clipboard::ClipboardOutput::new(
+                config.append_text.clone(),
+            )));
+            #[cfg(target_os = "macos")]
+            chain.push(Box::new(pbcopy::PbcopyOutput::new(false)));
+            #[cfg(target_os = "windows")]
+            chain.push(Box::new(windows::WindowsClipboardOutput::new(
                 config.append_text.clone(),
             )));
         }
@@ -420,9 +474,16 @@ pub fn create_output_chain_with_override(
 pub async fn run_hook(command: &str, hook_name: &str) -> Result<(), String> {
     tracing::debug!("Running {} hook: {}", hook_name, command);
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    let mut process = if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/D", "/S", "/C", command]);
+        cmd
+    } else {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", command]);
+        cmd
+    };
+    let output = process
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -454,7 +515,10 @@ pub struct OutputOptions<'a> {
 /// keybindings when modifiers are held. Used to filter the chain when the
 /// modifier-release wait times out.
 fn is_keystroke_method(name: &str) -> bool {
-    matches!(name, "wtype" | "eitype" | "dotool" | "ydotool") || name.starts_with("paste")
+    matches!(
+        name,
+        "wtype" | "eitype" | "dotool" | "ydotool" | "windows-sendinput"
+    ) || name.starts_with("paste")
 }
 
 /// Try each output method in the chain until one succeeds
@@ -473,6 +537,8 @@ pub async fn output_with_fallback(
     // application keybindings. Disabled and timed-out cases both leave the
     // chain runnable; only the latter skips keystroke-synthesizing methods.
     let mut skip_keystroke_methods = false;
+    #[cfg(target_os = "windows")]
+    let mut notify_windows_clipboard_retention = false;
     // The evdev-based modifier_guard is Linux-only. macOS uses its own
     // wait_for_modifiers_release in osascript.rs and gets called separately
     // from the osascript output path.
@@ -500,6 +566,17 @@ pub async fn output_with_fallback(
             .await;
             skip_keystroke_methods = true;
         }
+    }
+    #[cfg(target_os = "windows")]
+    if options.wait_for_modifier_release
+        && !windows::wait_for_modifiers_release(options.modifier_release_timeout).await
+    {
+        tracing::warn!(
+            timeout_ms = options.modifier_release_timeout.as_millis() as u64,
+            "Modifier keys remain held; copying the transcription to the clipboard"
+        );
+        skip_keystroke_methods = true;
+        notify_windows_clipboard_retention = true;
     }
 
     // Run pre-output hook if configured (e.g., switch to modifier-suppressing submap)
@@ -529,6 +606,14 @@ pub async fn output_with_fallback(
         match output.output(&normalized_text).await {
             Ok(()) => {
                 tracing::debug!("Text output via {}", output.name());
+                #[cfg(target_os = "windows")]
+                if notify_windows_clipboard_retention {
+                    crate::notification::send(
+                        "VoxType",
+                        "A modifier key is still held. The transcription was copied to the clipboard.",
+                    )
+                    .await;
+                }
                 result = Ok(());
                 break;
             }
@@ -617,6 +702,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_find_ydotool_socket_returns_none_when_no_socket() {
         // In a test environment there should be no ydotoold running, so this
         // should return None (no socket file exists at any candidate path).
@@ -624,6 +710,7 @@ mod tests {
         let _result = find_ydotool_socket();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_find_ydotool_socket_respects_env_override() {
         use std::os::unix::net::UnixListener;

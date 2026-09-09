@@ -14,8 +14,13 @@
 //! - [`theme`] — Omarchy theme parsing + change watcher.
 
 pub mod config;
+#[cfg(unix)]
 pub mod ipc;
+#[cfg(unix)]
 pub mod style;
+#[cfg(unix)]
 pub mod supervisor;
+#[cfg(unix)]
 pub mod theme;
+#[cfg(unix)]
 pub mod visual;

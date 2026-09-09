@@ -2,14 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, windows]
   pull_request:
 
-# Three parallel jobs (fmt, clippy, test) instead of a single sequential `check`.
-# Each runs on its own runner so a 4 min clippy run doesn't block a 30 s fmt
-# check, and PR failures attribute to the specific gate that broke. Required
-# status checks on dev (PR-time) and main (release-time) reference all three
-# job names; if you rename or remove one here, update branch protection.
+# Platform checks run independently so failures identify the affected build.
+# Required status checks on dev (PR-time) and main (release-time) use the
+# aggregate job below.
 
 jobs:
   fmt:
@@ -64,12 +62,48 @@ jobs:
       - name: cargo test
         run: cargo test
 
+  windows:
+    name: windows
+    runs-on: windows-latest
+    # whisper.cpp's nested Vulkan shader build exceeds MSBuild's path limit
+    # under the normal checkout target directory.
+    env:
+      CARGO_TARGET_DIR: C:\vt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          choco install vulkan-sdk --yes --no-progress
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $sdk) { throw "Vulkan SDK installation directory was not found" }
+          "VULKAN_SDK=$($sdk.FullName)" | Out-File $env:GITHUB_ENV -Append
+          "$($sdk.FullName)\Bin" | Out-File $env:GITHUB_PATH -Append
+
+      - name: Test Windows targets
+        run: cargo test --locked --all-targets
+
+      - name: Clippy Windows targets
+        run: cargo clippy --locked --all-targets --no-deps -- -D warnings
+
+      - name: Build Windows Vulkan release
+        run: cargo build --locked --release --features gpu-vulkan
+
   # Aggregator job — branch protection only needs to require `ci-success`.
   # Adding/removing parallel checks above just updates the `needs:` list;
   # the protection rule never needs to be touched.
   ci-success:
     name: ci-success
-    needs: [fmt, clippy, test]
+    needs: [fmt, clippy, test, windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -79,10 +113,12 @@ jobs:
           fmt='${{ needs.fmt.result }}'
           clippy='${{ needs.clippy.result }}'
           test='${{ needs.test.result }}'
+          windows='${{ needs.windows.result }}'
           echo "fmt:    $fmt"
           echo "clippy: $clippy"
           echo "test:   $test"
-          if [[ "$fmt" != success || "$clippy" != success || "$test" != success ]]; then
+          echo "windows: $windows"
+          if [[ "$fmt" != success || "$clippy" != success || "$test" != success || "$windows" != success ]]; then
             echo "::error::One or more required jobs failed"
             exit 1
           fi

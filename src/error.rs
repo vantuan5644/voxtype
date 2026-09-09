@@ -44,6 +44,9 @@ pub enum HotkeyError {
 
     #[error("evdev error: {0}")]
     Evdev(String),
+
+    #[error("Windows hotkey error: {0}")]
+    Windows(String),
 }
 
 /// Errors related to audio capture
@@ -69,6 +72,9 @@ pub enum AudioError {
 
     #[error("Audio stream error: {0}")]
     StreamError(String),
+
+    #[error("Microphone access failed: {0}\n  Open Windows Settings > Privacy & security > Microphone and allow microphone access for desktop apps.")]
+    MicrophoneUnavailable(String),
 }
 
 /// Errors related to speech-to-text transcription

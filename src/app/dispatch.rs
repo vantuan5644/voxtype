@@ -11,6 +11,7 @@ use super::config_get::run_config_get;
 use super::config_schema::run_config_schema;
 use super::config_set::{run_config_set, run_config_unset};
 use super::config_show::show_config;
+use super::info::run_device_names;
 use super::info::run_info_command;
 use super::meeting::run_meeting_command;
 use super::record::send_record_command;
@@ -21,23 +22,31 @@ use super::updates::check_for_updates;
 /// Check if running as root and warn for commands that don't need elevated privileges.
 /// Returns true if running as root.
 fn warn_if_root(command_name: &str) -> bool {
-    // SAFETY: getuid() is always safe to call
-    let is_root = unsafe { libc::getuid() } == 0;
-    if is_root {
-        eprintln!(
-            "Warning: Running 'voxtype setup {}' as root is not recommended.",
-            command_name
-        );
-        eprintln!("  - Models will download to /root/.local/share/voxtype/ instead of your user directory");
-        eprintln!(
+    #[cfg(target_os = "windows")]
+    {
+        let _ = command_name;
+        false
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid() is always safe to call
+        let is_root = unsafe { libc::getuid() } == 0;
+        if is_root {
+            eprintln!(
+                "Warning: Running 'voxtype setup {}' as root is not recommended.",
+                command_name
+            );
+            eprintln!("  - Models will download to /root/.local/share/voxtype/ instead of your user directory");
+            eprintln!(
             "  - Config changes will apply to /root/.config/voxtype/ instead of your user config"
         );
-        eprintln!("  - Cannot restart your user's voxtype daemon from root");
-        eprintln!();
-        eprintln!("Run without sudo: voxtype setup {}", command_name);
-        eprintln!();
+            eprintln!("  - Cannot restart your user's voxtype daemon from root");
+            eprintln!();
+            eprintln!("Run without sudo: voxtype setup {}", command_name);
+            eprintln!();
+        }
+        is_root
     }
-    is_root
 }
 
 /// Dispatch the parsed subcommand. `top_level_model` is the clone of
@@ -400,6 +409,10 @@ pub(crate) async fn dispatch(
 
         Commands::Info { action } => {
             run_info_command(action, &config)?;
+        }
+
+        Commands::Devices { json } => {
+            run_device_names(json)?;
         }
 
         Commands::Configure {

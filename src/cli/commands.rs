@@ -119,6 +119,13 @@ pub enum Commands {
         action: InfoAction,
     },
 
+    /// List audio input device names
+    Devices {
+        /// Print a JSON array of names exactly as reported by CPAL
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Open the interactive configuration TUI
     Configure {
         /// Render as if installed from a package (for testing source builds).

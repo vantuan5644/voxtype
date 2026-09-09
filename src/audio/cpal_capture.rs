@@ -69,7 +69,7 @@ fn find_audio_device(host: &cpal::Host, device_name: &str) -> Result<cpal::Devic
 
     let devices: Vec<cpal::Device> = host
         .input_devices()
-        .map_err(|e| AudioError::Connection(e.to_string()))?
+        .map_err(audio_connection_error)?
         .collect();
 
     // Collect device names for error message
@@ -84,7 +84,7 @@ fn find_audio_device(host: &cpal::Host, device_name: &str) -> Result<cpal::Devic
                 tracing::debug!("Found audio device by exact match: {}", name);
                 return host
                     .input_devices()
-                    .map_err(|e| AudioError::Connection(e.to_string()))?
+                    .map_err(audio_connection_error)?
                     .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
                     .ok_or_else(|| AudioError::DeviceNotFound(device_name.to_string()));
             }
@@ -103,7 +103,7 @@ fn find_audio_device(host: &cpal::Host, device_name: &str) -> Result<cpal::Devic
                 let matched_name = name.clone();
                 return host
                     .input_devices()
-                    .map_err(|e| AudioError::Connection(e.to_string()))?
+                    .map_err(audio_connection_error)?
                     .find(|d| d.name().map(|n| n == matched_name).unwrap_or(false))
                     .ok_or_else(|| AudioError::DeviceNotFound(device_name.to_string()));
             }
@@ -122,7 +122,7 @@ fn find_audio_device(host: &cpal::Host, device_name: &str) -> Result<cpal::Devic
                 let matched_name = name.clone();
                 return host
                     .input_devices()
-                    .map_err(|e| AudioError::Connection(e.to_string()))?
+                    .map_err(audio_connection_error)?
                     .find(|d| d.name().map(|n| n == matched_name).unwrap_or(false))
                     .ok_or_else(|| AudioError::DeviceNotFound(device_name.to_string()));
             }
@@ -149,6 +149,28 @@ fn find_audio_device(host: &cpal::Host, device_name: &str) -> Result<cpal::Devic
     })
 }
 
+fn audio_connection_error(error: impl std::fmt::Display) -> AudioError {
+    #[cfg(target_os = "windows")]
+    {
+        AudioError::MicrophoneUnavailable(error.to_string())
+    }
+    #[cfg(unix)]
+    {
+        AudioError::Connection(error.to_string())
+    }
+}
+
+fn audio_stream_start_error(error: impl std::fmt::Display) -> AudioError {
+    #[cfg(target_os = "windows")]
+    {
+        AudioError::MicrophoneUnavailable(error.to_string())
+    }
+    #[cfg(unix)]
+    {
+        AudioError::StreamError(error.to_string())
+    }
+}
+
 #[async_trait::async_trait]
 impl AudioCapture for CpalCapture {
     async fn start(&mut self) -> Result<mpsc::Receiver<Vec<f32>>, AudioError> {
@@ -158,8 +180,18 @@ impl AudioCapture for CpalCapture {
         let host = cpal::default_host();
 
         let device = if self.config.device == "default" {
-            host.default_input_device()
-                .ok_or_else(|| AudioError::DeviceNotFound("default".to_string()))?
+            host.default_input_device().ok_or_else(|| {
+                #[cfg(target_os = "windows")]
+                {
+                    AudioError::MicrophoneUnavailable(
+                        "Windows returned no default recording device".to_string(),
+                    )
+                }
+                #[cfg(unix)]
+                {
+                    AudioError::DeviceNotFound("default".to_string())
+                }
+            })?
         } else {
             find_audio_device(&host, &self.config.device)?
         };
@@ -170,7 +202,7 @@ impl AudioCapture for CpalCapture {
         // Get supported config
         let supported_config = device
             .default_input_config()
-            .map_err(|e| AudioError::Connection(e.to_string()))?;
+            .map_err(audio_connection_error)?;
 
         let source_sample_rate = supported_config.sample_rate().0;
         let source_channels = supported_config.channels() as usize;
@@ -187,6 +219,7 @@ impl AudioCapture for CpalCapture {
         // Create channels
         let (chunk_tx, chunk_rx) = mpsc::channel(64);
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CaptureCommand>();
+        let (startup_tx, startup_rx) = oneshot::channel::<Result<(), AudioError>>();
 
         // Shared state
         let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -194,6 +227,8 @@ impl AudioCapture for CpalCapture {
 
         // Spawn audio capture thread
         let thread_handle = thread::spawn(move || {
+            let mut startup_tx = Some(startup_tx);
+
             // Build stream config
             let stream_config = cpal::StreamConfig {
                 channels: supported_config.channels(),
@@ -254,7 +289,11 @@ impl AudioCapture for CpalCapture {
                     build_stream::<u16>(&device, &stream_config, make_params(), err_fn)
                 }
                 format => {
-                    tracing::error!("Unsupported sample format: {:?}", format);
+                    let error = AudioError::StreamError(format!(
+                        "Unsupported input sample format: {format:?}"
+                    ));
+                    tracing::error!("{error}");
+                    let _ = startup_tx.take().unwrap().send(Err(error));
                     return;
                 }
             };
@@ -263,14 +302,21 @@ impl AudioCapture for CpalCapture {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!("Failed to build audio stream: {}", e);
+                    let _ = startup_tx.take().unwrap().send(Err(e));
                     return;
                 }
             };
 
             if let Err(e) = stream.play() {
                 tracing::error!("Failed to start audio stream: {}", e);
+                let _ = startup_tx
+                    .take()
+                    .unwrap()
+                    .send(Err(audio_stream_start_error(e)));
                 return;
             }
+
+            let _ = startup_tx.take().unwrap().send(Ok(()));
 
             tracing::debug!("Audio capture thread started");
 
@@ -337,6 +383,20 @@ impl AudioCapture for CpalCapture {
 
             tracing::debug!("Audio capture thread stopped");
         });
+
+        match startup_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = thread_handle.join();
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = thread_handle.join();
+                return Err(AudioError::StreamError(
+                    "Audio capture thread stopped during startup".to_string(),
+                ));
+            }
+        }
 
         self.cmd_tx = Some(cmd_tx);
         self.thread_handle = Some(thread_handle);
@@ -467,7 +527,16 @@ where
             err_fn,
             None,
         )
-        .map_err(|e| AudioError::StreamError(e.to_string()))?;
+        .map_err(|e| {
+            #[cfg(target_os = "windows")]
+            {
+                AudioError::MicrophoneUnavailable(e.to_string())
+            }
+            #[cfg(unix)]
+            {
+                AudioError::StreamError(e.to_string())
+            }
+        })?;
 
     Ok(stream)
 }

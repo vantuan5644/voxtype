@@ -20,6 +20,7 @@
 
 /// PulseAudio/PipeWire stream volume captured before media ducking.
 #[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct DuckedMediaStream {
     index: u32,
     volumes: Vec<String>,

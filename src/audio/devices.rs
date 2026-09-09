@@ -22,12 +22,15 @@ pub struct InputDevice {
 pub fn enumerate_input_devices() -> Vec<String> {
     let _silenced = SilencedStderr::install();
 
+    #[cfg(unix)]
     let mut out = vec!["default".to_string()];
+    #[cfg(target_os = "windows")]
+    let mut out = Vec::new();
     let host = cpal::default_host();
     if let Ok(devices) = host.input_devices() {
         for d in devices {
             if let Ok(name) = d.name() {
-                if name != "default" && !out.contains(&name) {
+                if !out.contains(&name) {
                     out.push(name);
                 }
             }
@@ -49,10 +52,12 @@ pub fn input_devices() -> Vec<InputDevice> {
 
 /// RAII guard that redirects fd 2 (stderr) to /dev/null on construction and
 /// restores the original fd on drop.
+#[cfg(unix)]
 struct SilencedStderr {
     saved_fd: Option<libc::c_int>,
 }
 
+#[cfg(unix)]
 impl SilencedStderr {
     fn install() -> Self {
         let null_fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY) };
@@ -72,6 +77,7 @@ impl SilencedStderr {
     }
 }
 
+#[cfg(unix)]
 impl Drop for SilencedStderr {
     fn drop(&mut self) {
         if let Some(saved) = self.saved_fd.take() {
@@ -83,12 +89,23 @@ impl Drop for SilencedStderr {
     }
 }
 
-#[cfg(test)]
+#[cfg(target_os = "windows")]
+struct SilencedStderr;
+
+#[cfg(target_os = "windows")]
+impl SilencedStderr {
+    fn install() -> Self {
+        Self
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     /// Runs on CI hosts with no sound card, so the only guarantee is the
     /// synthetic `default` entry and no duplicates.
+    #[cfg(unix)]
     #[test]
     fn default_is_always_offered_exactly_once() {
         let devices = input_devices();

@@ -408,8 +408,38 @@ pub fn default_config_content() -> String {
                 "# FN (Globe key) is recommended on macOS",
             )
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        DEFAULT_CONFIG
+            .replace("key = \"SCROLLLOCK\"", "# key = \"F24\"")
+            .replace(
+                "# Common choices: SCROLLLOCK, PAUSE, RIGHTALT, F13-F24",
+                "# Common choices: PAUSE, RIGHTALT, F13-F24",
+            )
+            .replace(
+                "# Use `evtest` to find key names for your keyboard",
+                "# Set a key only when enabling the native Windows hotkey",
+            )
+            .replace(
+                "# Enable built-in hotkey detection (default: true)",
+                "# Native global hotkeys are disabled by default on Windows",
+            )
+            .replace("# enabled = true", "enabled = false")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         DEFAULT_CONFIG.to_string()
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::default_config_content;
+
+    #[test]
+    fn generated_config_has_no_active_hotkey_key() {
+        let content = default_config_content();
+        assert!(content.contains("\nenabled = false\n"));
+        assert!(!content.contains("\nkey = \""));
     }
 }

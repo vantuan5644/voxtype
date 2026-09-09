@@ -123,10 +123,10 @@ pub(crate) fn send_record_command(
             .map_err(|e| anyhow::anyhow!("Failed to write no_osd override: {}", e))?;
     }
 
-    // For toggle, we need to read current state to decide which signal to send
-    let signal: libc::c_int = match &action {
-        RecordAction::Start { .. } => libc::SIGUSR1,
-        RecordAction::Stop { .. } => libc::SIGUSR2,
+    // For toggle, read current state to decide which control request to send.
+    let should_start = match &action {
+        RecordAction::Start { .. } => true,
+        RecordAction::Stop { .. } => false,
         RecordAction::Toggle { .. } => {
             // Read current state to determine action
             let state_file = match config.resolve_state_file() {
@@ -156,11 +156,7 @@ pub(crate) fn send_record_command(
             // timeout fires — leaking audio into whatever window
             // has focus.
             let active = matches!(current_state.trim(), "recording" | "streaming");
-            if active {
-                libc::SIGUSR2 // Stop
-            } else {
-                libc::SIGUSR1 // Start
-            }
+            !active
         }
         RecordAction::Cancel => unreachable!(), // Handled above
     };
@@ -185,12 +181,31 @@ pub(crate) fn send_record_command(
         _ => None,
     };
 
-    let result = unsafe { libc::kill(pid, signal) };
-    if result != 0 {
-        return Err(anyhow::anyhow!(
-            "Failed to send signal to daemon: {}",
-            std::io::Error::last_os_error()
-        ));
+    #[cfg(unix)]
+    {
+        let signal = if should_start {
+            libc::SIGUSR1
+        } else {
+            libc::SIGUSR2
+        };
+        let result = unsafe { libc::kill(pid, signal) };
+        if result != 0 {
+            return Err(anyhow::anyhow!(
+                "Failed to send signal to daemon: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = pid;
+        let trigger = config::Config::runtime_dir().join(if should_start {
+            "record_start"
+        } else {
+            "record_stop"
+        });
+        std::fs::write(&trigger, if should_start { "start" } else { "stop" })
+            .map_err(|e| anyhow::anyhow!("Failed to request recording control: {e}"))?;
     }
 
     if let Some(transcript) = wait_target {

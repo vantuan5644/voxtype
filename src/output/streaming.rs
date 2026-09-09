@@ -47,7 +47,9 @@
 use crate::error::OutputError;
 use crate::output::post_process::PostProcessor;
 use crate::output::{output_with_fallback, OutputOptions, TextOutput};
+#[cfg(unix)]
 use std::process::Stdio;
+#[cfg(unix)]
 use tokio::process::Command;
 
 /// A streaming output session: types finalized segments incrementally,
@@ -298,18 +300,30 @@ async fn emit_backspaces(count: usize) -> usize {
     if count == 0 {
         return 0;
     }
-    if try_wtype_backspaces(count).await {
-        return count;
+    #[cfg(target_os = "windows")]
+    {
+        if crate::output::windows::send_backspaces(count).is_ok() {
+            count
+        } else {
+            0
+        }
     }
-    if try_dotool_backspaces(count).await {
-        return count;
+    #[cfg(unix)]
+    {
+        if try_wtype_backspaces(count).await {
+            return count;
+        }
+        if try_dotool_backspaces(count).await {
+            return count;
+        }
+        if try_ydotool_backspaces(count).await {
+            return count;
+        }
+        0
     }
-    if try_ydotool_backspaces(count).await {
-        return count;
-    }
-    0
 }
 
+#[cfg(unix)]
 async fn try_wtype_backspaces(count: usize) -> bool {
     // wtype invocation: `wtype -k BackSpace` repeated. Build args
     // dynamically to send N keypresses in a single subprocess.
@@ -321,6 +335,7 @@ async fn try_wtype_backspaces(count: usize) -> bool {
     matches!(cmd.status().await, Ok(s) if s.success())
 }
 
+#[cfg(unix)]
 async fn try_dotool_backspaces(count: usize) -> bool {
     // Prefer `dotoolc` whenever dotoold is actually accepting input.
     // Spawning raw `dotool` creates a *new* uinput keyboard per call;
@@ -356,6 +371,7 @@ async fn try_dotool_backspaces(count: usize) -> bool {
     matches!(child.wait().await, Ok(s) if s.success())
 }
 
+#[cfg(unix)]
 async fn try_ydotool_backspaces(count: usize) -> bool {
     // ydotool key 14:1 14:0 sends BackSpace press+release. Linux key
     // codes: BackSpace = 14.

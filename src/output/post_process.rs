@@ -49,7 +49,7 @@ impl PostProcessor {
     pub async fn process_with_context(&self, text: &str, context: Option<&str>) -> String {
         match self.execute_command_with_env(text, context).await {
             Ok(processed) => {
-                if processed.is_empty() && self.fallback_on_empty {
+                if processed.is_empty() && (self.fallback_on_empty || cfg!(target_os = "windows")) {
                     tracing::warn!(
                         "Post-process command returned empty output, using original text"
                     );
@@ -86,11 +86,19 @@ impl PostProcessor {
         text: &str,
         context: Option<&str>,
     ) -> Result<String, PostProcessError> {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", &self.command])
-            .stdin(Stdio::piped())
+        let mut cmd = if cfg!(target_os = "windows") {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/S", "/C", &self.command]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", &self.command]);
+            command
+        };
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         // Always clear to prevent inheriting stale context from parent environment
         cmd.env_remove("VOXTYPE_CONTEXT");
@@ -100,6 +108,10 @@ impl PostProcessor {
 
         let mut child = cmd
             .spawn()
+            .map_err(|e| PostProcessError::SpawnFailed(e.to_string()))?;
+
+        #[cfg(target_os = "windows")]
+        let _kill_job = WindowsKillJob::attach(&child)
             .map_err(|e| PostProcessError::SpawnFailed(e.to_string()))?;
 
         // Write text to stdin
@@ -137,6 +149,58 @@ impl PostProcessor {
             // Only strip trailing newlines (artifact of shell output), preserve other whitespace
             Ok(processed.trim_end_matches('\n').to_string())
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsKillJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+impl WindowsKillJob {
+    fn attach(child: &tokio::process::Child) -> std::io::Result<Self> {
+        use std::mem::size_of;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut information: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &information as *const _ as *const std::ffi::c_void,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        } == 0
+        {
+            let error = std::io::Error::last_os_error();
+            unsafe { CloseHandle(job) };
+            return Err(error);
+        }
+        let process = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("child process has no native handle"))?;
+        if unsafe { AssignProcessToJobObject(job, process as _) } == 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe { CloseHandle(job) };
+            return Err(error);
+        }
+        Ok(Self(job))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsKillJob {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
     }
 }
 
@@ -178,7 +242,7 @@ impl std::fmt::Display for PostProcessError {
 
 impl std::error::Error for PostProcessError {}
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -413,5 +477,46 @@ mod tests {
         let result = processor.process_with_context("text", None).await;
         std::env::remove_var("VOXTYPE_CONTEXT");
         assert_eq!(result, "unset");
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::*;
+
+    fn make_config(command: &str, timeout_ms: u64) -> PostProcessConfig {
+        PostProcessConfig {
+            command: command.to_string(),
+            timeout_ms,
+            trim: true,
+            fallback_on_empty: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn command_receives_utf8_stdin() {
+        let processor = PostProcessor::new(&make_config("more", 5_000));
+        assert_eq!(
+            processor.process("hello from Windows").await,
+            "hello from Windows"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_returns_raw_text() {
+        let processor = PostProcessor::new(&make_config("ping 127.0.0.1 -n 6 >nul", 50));
+        assert_eq!(
+            processor.process("raw transcription").await,
+            "raw transcription"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsuccessful_or_empty_output_returns_raw_text() {
+        let failure = PostProcessor::new(&make_config("exit /b 9", 5_000));
+        assert_eq!(failure.process("raw failure").await, "raw failure");
+
+        let empty = PostProcessor::new(&make_config("rem", 5_000));
+        assert_eq!(empty.process("raw empty").await, "raw empty");
     }
 }

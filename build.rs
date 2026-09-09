@@ -23,14 +23,35 @@ mod cli;
 use cli::Cli;
 
 fn main() -> Result<(), Error> {
-    // Only generate man pages for release builds or when explicitly requested
+    expose_cuda_build_major();
+    println!("cargo:rerun-if-env-changed=VOXTYPE_GEN_MANPAGES");
+
+    // Windows packages do not ship Unix man pages, so automatic generation is
+    // limited to Unix releases. An explicit maintainer request still works on
+    // Windows and receives a larger stack below.
     let profile = env::var("PROFILE").unwrap_or_default();
-    let generate = env::var("VOXTYPE_GEN_MANPAGES").is_ok() || profile == "release";
+    let generate = env::var("VOXTYPE_GEN_MANPAGES").is_ok()
+        || (profile == "release" && !cfg!(target_os = "windows"));
 
     if !generate {
         return Ok(());
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        std::thread::Builder::new()
+            .name("manpage-generator".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(generate_manpages)?
+            .join()
+            .unwrap_or_else(|_| Err(Error::other("man-page generator panicked")))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    generate_manpages()
+}
+
+fn generate_manpages() -> Result<(), Error> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap_or_else(|_| "target".to_string()));
     let man_dir = out_dir.join("man");
     fs::create_dir_all(&man_dir)?;
@@ -75,8 +96,6 @@ fn main() -> Result<(), Error> {
         "cargo:warning=Man pages generated in: {}",
         man_dir.display()
     );
-
-    expose_cuda_build_major();
 
     Ok(())
 }
