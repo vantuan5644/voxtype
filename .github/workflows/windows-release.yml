@@ -18,6 +18,9 @@ jobs:
       # Keep whisper.cpp's generated Vulkan shader paths within MSBuild's
       # legacy path limit.
       CARGO_TARGET_DIR: C:\vt
+      # whisper-rs-sys bundles a cmake crate that predates the Visual Studio 2026
+      # generator name used by the current Windows image.
+      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v4
 
@@ -30,13 +33,17 @@ jobs:
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
-          choco install vulkan-sdk --yes --no-progress
+          choco install vulkan-sdk ninja --yes --no-progress
           $sdk = Get-ChildItem C:\VulkanSDK -Directory |
             Sort-Object Name -Descending |
             Select-Object -First 1
           if (-not $sdk) { throw 'Vulkan SDK installation directory was not found' }
           "VULKAN_SDK=$($sdk.FullName)" | Out-File $env:GITHUB_ENV -Append
           "$($sdk.FullName)\Bin" | Out-File $env:GITHUB_PATH -Append
+
+      - name: Lint Windows targets
+        shell: pwsh
+        run: cargo clippy --locked --all-targets --no-deps -- -D warnings
 
       - name: Test Windows targets
         shell: pwsh
