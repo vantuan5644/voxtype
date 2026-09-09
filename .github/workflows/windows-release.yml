@@ -1,9 +1,8 @@
 name: windows-release
 
 on:
-  pull_request:
+  workflow_dispatch:
   push:
-    branches: [main, windows]
     tags: ['v*-windows.*']
 
 permissions:

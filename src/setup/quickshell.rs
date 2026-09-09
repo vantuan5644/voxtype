@@ -750,6 +750,7 @@ mod tests {
         let _ = resolve_bridge_source(Some(&bogus));
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_bridge_symlink_creates_link() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -779,6 +780,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_bridge_symlink_is_idempotent_when_matches() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -807,6 +809,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_bridge_symlink_refuses_overwrite_without_force() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
