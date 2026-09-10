@@ -32,7 +32,12 @@ jobs:
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
-          choco install vulkan-sdk ninja --yes --no-progress
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install vulkan-sdk ninja --yes --no-progress
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { throw 'Vulkan SDK installation failed after three attempts' }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
           $sdk = Get-ChildItem C:\VulkanSDK -Directory |
             Sort-Object Name -Descending |
             Select-Object -First 1
