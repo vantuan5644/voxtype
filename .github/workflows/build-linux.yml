@@ -34,6 +34,7 @@ on:
 jobs:
   build:
     name: build-${{ matrix.variant }}
+    if: ${{ !contains(github.ref_name, '-windows.') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
@@ -326,7 +327,7 @@ jobs:
   release:
     name: collect-and-release
     needs: build
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && !contains(github.ref_name, '-windows.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -704,7 +705,7 @@ jobs:
   linux-ci-success:
     name: linux-ci-success
     needs: [build, release]
-    if: always()
+    if: ${{ always() && !contains(github.ref_name, '-windows.') }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

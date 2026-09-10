@@ -23,6 +23,7 @@ permissions:
 jobs:
   build:
     name: build (${{ matrix.label }})
+    if: ${{ !contains(github.ref_name, '-windows.') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -48,7 +49,7 @@ jobs:
   nix-success:
     name: nix-success
     needs: [build]
-    if: always()
+    if: ${{ always() && !contains(github.ref_name, '-windows.') }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

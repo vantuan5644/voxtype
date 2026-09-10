@@ -22,6 +22,7 @@ on:
 
 jobs:
   build:
+    if: ${{ !contains(github.ref_name, '-windows.') }}
     runs-on: macos-14  # Apple Silicon runner for ARM64 build
     # Hoisted to job scope on purpose. A step's `if:` cannot read that same
     # step's own `env:` block, so gating on secrets has to happen against a
@@ -250,7 +251,7 @@ jobs:
   macos-ci-success:
     name: macos-ci-success
     needs: [build]
-    if: always()
+    if: ${{ always() && !contains(github.ref_name, '-windows.') }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
