@@ -257,9 +257,9 @@ impl Transcript {
                     total_removed += end - i;
 
                     tracing::debug!(
-                        "Stripping echoed phrase ({} words): {:?}",
+                        "Stripping echoed phrase ({} words): {}",
                         end - i,
-                        words[i..end].join(" ")
+                        crate::redact::text(&words[i..end].join(" "))
                     );
 
                     i = end;

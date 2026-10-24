@@ -24,6 +24,9 @@ QUICK START:
   voxtype setup gpu           Manage GPU acceleration
   voxtype status --follow     Watch daemon status (Waybar integration)
 
+ENVIRONMENT:
+  VOXTYPE_REDACT_TEXT=1       Log only the length of dictated text, never the words
+
 See 'voxtype --help' for all options or 'man voxtype' for full docs.")]
 #[command(after_long_help = "\
 QUICK START:
@@ -43,6 +46,9 @@ EXAMPLES:
   voxtype setup gpu           Manage GPU acceleration (Vulkan/CUDA/MIGraphX)
   voxtype setup onnx          Switch between Whisper and ONNX engines
   voxtype status --follow --format json   Waybar integration
+
+ENVIRONMENT:
+  VOXTYPE_REDACT_TEXT=1       Log only the length of dictated text, never the words
 
 See 'voxtype <command> --help' for more info on a command.
 See 'man voxtype' or docs/INSTALL.md for setup instructions.")]

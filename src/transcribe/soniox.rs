@@ -610,7 +610,11 @@ impl SonioxTranscriber {
             let parsed: ServerMessage = match serde_json::from_str(&text) {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::debug!("Soniox: unparseable message ({}): {}", e, text);
+                    tracing::debug!(
+                        "Soniox: unparseable message ({}): {}",
+                        e,
+                        crate::redact::text(&text)
+                    );
                     continue;
                 }
             };
@@ -1107,7 +1111,7 @@ async fn run_streaming_session(
                 let parsed: ServerMessage = match serde_json::from_str(&text) {
                     Ok(p) => p,
                     Err(e) => {
-                        tracing::warn!("Soniox: unparseable message ({}): {}", e, text);
+                        tracing::warn!("Soniox: unparseable message ({}): {}", e, crate::redact::text(&text));
                         continue;
                     }
                 };

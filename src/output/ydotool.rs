@@ -115,14 +115,14 @@ impl TextOutput for YdotoolOutput {
         cmd.arg("--").arg(text);
 
         tracing::debug!(
-            "Running: ydotool type --key-delay {} {} -- \"{}\"",
+            "Running: ydotool type --key-delay {} {} -- {}",
             self.type_delay_ms,
             if self.supports_key_hold {
                 format!("--key-hold {}", self.type_delay_ms)
             } else {
                 String::new()
             },
-            text.chars().take(20).collect::<String>()
+            crate::redact::preview(&text, 20)
         );
 
         let output = cmd

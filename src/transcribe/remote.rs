@@ -270,13 +270,9 @@ impl Transcriber for RemoteTranscriber {
             .to_string();
 
         tracing::info!(
-            "Remote transcription completed in {:.2}s: {:?}",
+            "Remote transcription completed in {:.2}s: {}",
             start.elapsed().as_secs_f32(),
-            if text.chars().count() > 50 {
-                format!("{}...", text.chars().take(50).collect::<String>())
-            } else {
-                text.clone()
-            }
+            crate::redact::preview(&text, 50)
         );
 
         Ok(text)

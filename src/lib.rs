@@ -92,6 +92,7 @@ pub mod notification;
 pub mod osd;
 pub mod output;
 pub mod platform;
+pub mod redact;
 pub mod setup;
 pub mod state;
 pub mod status_json;

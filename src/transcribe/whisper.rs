@@ -286,8 +286,8 @@ impl Transcriber for WhisperTranscriber {
 
         if duration_secs >= 1.0 && is_degenerate_transcript(&result) {
             tracing::warn!(
-                "Whisper returned degenerate transcript {:?} for {:.2}s audio; retrying with beam search",
-                result,
+                "Whisper returned degenerate transcript {} for {:.2}s audio; retrying with beam search",
+                crate::redact::text(&result),
                 duration_secs
             );
             let retry_result =
@@ -305,13 +305,9 @@ impl Transcriber for WhisperTranscriber {
         }
 
         tracing::info!(
-            "Transcription completed in {:.2}s: {:?}",
+            "Transcription completed in {:.2}s: {}",
             start.elapsed().as_secs_f32(),
-            if result.chars().count() > 50 {
-                format!("{}...", result.chars().take(50).collect::<String>())
-            } else {
-                result.clone()
-            }
+            crate::redact::preview(&result, 50)
         );
 
         Ok(result)

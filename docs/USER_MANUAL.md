@@ -2374,6 +2374,16 @@ RUST_LOG=debug voxtype
 RUST_LOG=voxtype=debug voxtype
 ```
 
+### Logs Without Dictated Text
+
+At debug level the daemon logs each transcription, and the transcription engines log what they heard. Set `VOXTYPE_REDACT_TEXT=1` to log only the length of each text (`[42 chars]`), for a log you can attach to a bug report:
+
+```bash
+VOXTYPE_REDACT_TEXT=1 voxtype -v daemon
+```
+
+The variable is inherited by the programs voxtype starts. `voxtype --help` lists it, so a front end can check whether the installed voxtype supports it.
+
 ---
 
 ## Integration Examples

@@ -2069,7 +2069,11 @@ impl Daemon {
                 // Task is finished, await will complete immediately
                 match task.await {
                     Ok(Ok(text)) => {
-                        tracing::debug!("Chunk {} completed: {:?}", chunk_index, text);
+                        tracing::debug!(
+                            "Chunk {} completed: {}",
+                            chunk_index,
+                            crate::redact::text(&text)
+                        );
                         completed.push(ChunkResult { text, chunk_index });
                     }
                     Ok(Err(e)) => {
@@ -2104,7 +2108,11 @@ impl Daemon {
         for (chunk_index, task) in self.eager_chunk_tasks.drain(..) {
             match task.await {
                 Ok(Ok(text)) => {
-                    tracing::debug!("Chunk {} completed (waited): {:?}", chunk_index, text);
+                    tracing::debug!(
+                        "Chunk {} completed (waited): {}",
+                        chunk_index,
+                        crate::redact::text(&text)
+                    );
                     results.push(ChunkResult { text, chunk_index });
                 }
                 Ok(Err(e)) => {
@@ -2184,7 +2192,7 @@ impl Daemon {
                     .await
                 {
                     Ok(Ok(text)) => {
-                        tracing::debug!("Tail transcription: {:?}", text);
+                        tracing::debug!("Tail transcription: {}", crate::redact::text(&text));
                         chunk_results.push(ChunkResult {
                             text,
                             chunk_index: chunks_sent,
@@ -2202,7 +2210,10 @@ impl Daemon {
 
         // Combine all chunk results
         let combined = eager::combine_chunk_results(chunk_results);
-        tracing::info!("Combined eager transcription: {:?}", combined);
+        tracing::info!(
+            "Combined eager transcription: {}",
+            crate::redact::text(&combined)
+        );
 
         if combined.is_empty() {
             None
@@ -2346,12 +2357,15 @@ impl Daemon {
                     tracing::debug!("Transcription was empty");
                     self.reset_to_idle(state).await;
                 } else {
-                    tracing::info!("Transcribed: {:?}", text);
+                    tracing::info!("Transcribed: {}", crate::redact::text(&text));
 
                     // Apply text processing (replacements, punctuation)
                     let processed_text = self.text_processor.process(&text);
                     if processed_text != text {
-                        tracing::debug!("After text processing: {:?}", processed_text);
+                        tracing::debug!(
+                            "After text processing: {}",
+                            crate::redact::text(&processed_text)
+                        );
                     }
 
                     // Smart auto-submit: detect "submit" trigger word at end
@@ -2362,8 +2376,8 @@ impl Daemon {
                         .detect_submit(&processed_text, smart_auto_submit_cli);
                     if smart_submit {
                         tracing::debug!(
-                            "Smart auto-submit triggered, stripped text: {:?}",
-                            processed_text
+                            "Smart auto-submit triggered, stripped text: {}",
+                            crate::redact::text(&processed_text)
                         );
                     }
 
@@ -2406,12 +2420,18 @@ impl Daemon {
                                 profile_override.as_ref().unwrap(),
                                 recent_context.is_some()
                             );
-                            tracing::debug!("Post-processing context: {:?}", recent_context);
+                            tracing::debug!(
+                                "Post-processing context: {}",
+                                crate::redact::optional(recent_context.as_deref())
+                            );
                             let result = profile_processor
                                 .process_with_context(&processed_text, recent_context.as_deref())
                                 .await;
                             tracing::info!("Post-processed: changed: {}", result != processed_text);
-                            tracing::debug!("Post-processed result: {:?}", result);
+                            tracing::debug!(
+                                "Post-processed result: {}",
+                                crate::redact::text(&result)
+                            );
                             result
                         } else {
                             // Profile exists but has no post_process_command, use default
@@ -2421,9 +2441,9 @@ impl Daemon {
                                     recent_context.is_some()
                                 );
                                 tracing::debug!(
-                                    "Post-processing input: {:?}, context: {:?}",
-                                    processed_text,
-                                    recent_context
+                                    "Post-processing input: {}, context: {}",
+                                    crate::redact::text(&processed_text),
+                                    crate::redact::optional(recent_context.as_deref())
                                 );
                                 let result = post_processor
                                     .process_with_context(
@@ -2435,7 +2455,10 @@ impl Daemon {
                                     "Post-processed: changed: {}",
                                     result != processed_text
                                 );
-                                tracing::debug!("Post-processed result: {:?}", result);
+                                tracing::debug!(
+                                    "Post-processed result: {}",
+                                    crate::redact::text(&result)
+                                );
                                 result
                             } else {
                                 processed_text
@@ -2447,15 +2470,15 @@ impl Daemon {
                             recent_context.is_some()
                         );
                         tracing::debug!(
-                            "Post-processing input: {:?}, context: {:?}",
-                            processed_text,
-                            recent_context
+                            "Post-processing input: {}, context: {}",
+                            crate::redact::text(&processed_text),
+                            crate::redact::optional(recent_context.as_deref())
                         );
                         let result = post_processor
                             .process_with_context(&processed_text, recent_context.as_deref())
                             .await;
                         tracing::info!("Post-processed: changed: {}", result != processed_text);
-                        tracing::debug!("Post-processed result: {:?}", result);
+                        tracing::debug!("Post-processed result: {}", crate::redact::text(&result));
                         result
                     } else {
                         processed_text
@@ -2466,8 +2489,8 @@ impl Daemon {
 
                     if smart_submit {
                         tracing::debug!(
-                            "Smart auto-submit: final text after post-processing: {:?}",
-                            final_text
+                            "Smart auto-submit: final text after post-processing: {}",
+                            crate::redact::text(&final_text)
                         );
                     }
 

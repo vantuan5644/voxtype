@@ -572,13 +572,9 @@ impl Transcriber for MoonshineTranscriber {
         let result = text.trim().to_string();
 
         tracing::info!(
-            "Moonshine transcription completed in {:.2}s: {:?}",
+            "Moonshine transcription completed in {:.2}s: {}",
             start.elapsed().as_secs_f32(),
-            if result.chars().count() > 50 {
-                format!("{}...", result.chars().take(50).collect::<String>())
-            } else {
-                result.clone()
-            }
+            crate::redact::preview(&result, 50)
         );
 
         Ok(result)

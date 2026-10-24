@@ -223,13 +223,9 @@ impl Transcriber for CliTranscriber {
             .to_string();
 
         tracing::info!(
-            "Transcription completed in {:.2}s: {:?}",
+            "Transcription completed in {:.2}s: {}",
             start.elapsed().as_secs_f32(),
-            if text.chars().count() > 50 {
-                format!("{}...", text.chars().take(50).collect::<String>())
-            } else {
-                text.clone()
-            }
+            crate::redact::preview(&text, 50)
         );
 
         Ok(text)
