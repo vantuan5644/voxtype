@@ -53,9 +53,11 @@ jobs:
         shell: pwsh
         run: cargo test --locked --all-targets
 
+      # Whisper on Vulkan, Parakeet on DirectML (CPU when the PC has no DirectX 12 GPU).
+      # The packaging ships DirectML.dll next to voxtype.exe.
       - name: Build Windows Vulkan release
         shell: pwsh
-        run: cargo build --locked --release --features gpu-vulkan
+        run: cargo build --locked --release --features gpu-vulkan,parakeet-directml
 
       - name: Assemble artifact
         id: artifact

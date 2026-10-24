@@ -102,7 +102,7 @@ jobs:
         run: cargo test --locked --all-targets
 
       - name: Build Windows Vulkan release
-        run: cargo build --locked --release --features gpu-vulkan
+        run: cargo build --locked --release --features gpu-vulkan,parakeet-directml
 
   # Aggregator job — branch protection only needs to require `ci-success`.
   # Adding/removing parallel checks above just updates the `needs:` list;

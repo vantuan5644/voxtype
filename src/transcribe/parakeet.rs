@@ -312,10 +312,32 @@ pub(super) fn build_execution_config() -> Option<ExecutionConfig> {
         return Some(ExecutionConfig::new().with_execution_provider(ExecutionProvider::MIGraphX));
     }
 
+    #[cfg(feature = "parakeet-directml")]
+    #[allow(clippy::needless_return)]
+    // the last block when DirectML is the only provider built in
+    {
+        use ort::ep::directml::PerformancePreference;
+
+        tracing::info!("Configuring DirectML execution provider for GPU acceleration");
+        // Registered here rather than through ExecutionProvider::DirectML, whose default
+        // preference takes the first adapter Windows lists, often an integrated GPU or a
+        // virtual display. HighPerformance asks for the discrete GPU. Without a DirectX 12
+        // GPU the DirectML registration fails softly and the CPU provider runs the model.
+        return Some(ExecutionConfig::new().with_custom_configure(|builder| {
+            Ok(builder.with_execution_providers([
+                ort::ep::DirectML::default()
+                    .with_performance_preference(PerformancePreference::HighPerformance)
+                    .build(),
+                ort::ep::CPU::default().build().error_on_failure(),
+            ])?)
+        }));
+    }
+
     #[cfg(not(any(
         feature = "parakeet-cuda",
         feature = "parakeet-tensorrt",
-        feature = "parakeet-migraphx"
+        feature = "parakeet-migraphx",
+        feature = "parakeet-directml"
     )))]
     {
         None
@@ -438,12 +460,20 @@ fn probe_cuda_runtime() -> bool {
 /// Auto-detect model type from directory structure
 ///
 /// TDT models have: encoder-model.onnx, decoder_joint-model.onnx, vocab.txt
+/// (quantized: encoder-model.int8.onnx, decoder_joint-model.int8.onnx)
 /// CTC models have: model.onnx (or model_int8.onnx), tokenizer.json
 fn detect_model_type(path: &PathBuf) -> ParakeetModelType {
     // Check for TDT model structure
-    let has_encoder =
-        path.join("encoder-model.onnx").exists() || path.join("encoder-model.onnx.data").exists();
-    let has_decoder = path.join("decoder_joint-model.onnx").exists();
+    let has_encoder = [
+        "encoder-model.onnx",
+        "encoder-model.onnx.data",
+        "encoder-model.int8.onnx",
+    ]
+    .iter()
+    .any(|name| path.join(name).exists());
+    let has_decoder = ["decoder_joint-model.onnx", "decoder_joint-model.int8.onnx"]
+        .iter()
+        .any(|name| path.join(name).exists());
 
     if has_encoder && has_decoder {
         tracing::debug!("Auto-detected TDT model (found encoder + decoder ONNX files)");
@@ -535,6 +565,20 @@ mod tests {
         // TDT model with .onnx.data file (large models split data)
         fs::write(model_path.join("encoder-model.onnx.data"), b"dummy").unwrap();
         fs::write(model_path.join("decoder_joint-model.onnx"), b"dummy").unwrap();
+
+        let detected = detect_model_type(&model_path);
+        assert_eq!(detected, ParakeetModelType::Tdt);
+    }
+
+    #[test]
+    fn test_detect_model_type_tdt_with_int8_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let model_path = temp_dir.path().to_path_buf();
+
+        // Quantized TDT export: only the .int8.onnx encoder and decoder
+        fs::write(model_path.join("encoder-model.int8.onnx"), b"dummy").unwrap();
+        fs::write(model_path.join("decoder_joint-model.int8.onnx"), b"dummy").unwrap();
+        fs::write(model_path.join("vocab.txt"), b"dummy").unwrap();
 
         let detected = detect_model_type(&model_path);
         assert_eq!(detected, ParakeetModelType::Tdt);
