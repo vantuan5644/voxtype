@@ -877,6 +877,74 @@ fn cleanup_model_override() {
 /// Result type for transcription task
 type TranscriptionResult = std::result::Result<String, crate::error::TranscribeError>;
 
+/// Settings the running daemon overrides for its session, at start and on
+/// `voxtype reload`. The user's config file is left untouched.
+fn adjust_for_session(config: &mut Config) {
+    #[cfg(target_os = "windows")]
+    if config.meeting.enabled {
+        tracing::warn!("Meeting mode is unavailable on Windows; disabling it for this daemon");
+        config.meeting.enabled = false;
+    }
+
+    // Streaming dictation types characters at the cursor while the user is
+    // still holding the PTT key. On Wayland compositors backed by libinput
+    // (Hyprland, Sway, River) those synthetic key events clobber the held-
+    // key state tracker, so the physical key release never fires bindrd and
+    // the daemon gets stuck in streaming. Force toggle activation when
+    // streaming is enabled.
+    if config.streaming_active() && config.hotkey.mode == ActivationMode::PushToTalk {
+        tracing::warn!(
+            "Streaming transcription requires toggle activation, not push-to-talk. \
+             Auto-promoting [hotkey] mode from push_to_talk to toggle for this session. \
+             Streaming output types characters at the cursor while you dictate; if your \
+             PTT key is held during typing, libinput-based compositors (Hyprland, Sway, \
+             River) lose track of the held-key state and the release event never fires. \
+             Update your config to set [hotkey] mode = \"toggle\" to silence this warning."
+        );
+        config.hotkey.mode = ActivationMode::Toggle;
+    }
+}
+
+/// Builds the daemon's config again for `voxtype reload`: the config file plus
+/// the command-line flags the daemon was started with, which keep winning over
+/// the file as they did at start.
+pub type Reloader = Box<dyn Fn() -> std::result::Result<Config, String> + Send>;
+
+#[cfg(target_os = "windows")]
+type HotkeyReceiver = tokio::sync::mpsc::UnboundedReceiver<HotkeyEvent>;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+type HotkeyReceiver = tokio::sync::mpsc::Receiver<HotkeyEvent>;
+/// A started hotkey listener and the events it sends.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+type StartedHotkey = (Box<dyn hotkey::HotkeyListener>, HotkeyReceiver);
+
+/// Create and start a hotkey listener for a reloaded config; `None` when the
+/// built-in hotkey is disabled. Unlike at startup, a failure to start is an
+/// error: the reload is refused and the running listener stays.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn start_hotkey_listener(config: &Config) -> std::result::Result<Option<StartedHotkey>, String> {
+    if !config.hotkey.enabled {
+        return Ok(None);
+    }
+    let mut listener =
+        hotkey::create_listener(&config.hotkey, config.whisper.secondary_model.clone())
+            .map_err(|e| format!("Hotkey: {}", e))?;
+    let rx = listener
+        .start()
+        .map_err(|e| format!("Hotkey listener: {}", e))?;
+    tracing::info!("Hotkey: {}", config.hotkey.key);
+    Ok(Some((listener, rx)))
+}
+
+/// A config loaded for `voxtype reload`, with any model it needs already built.
+struct PreparedReload {
+    config: Config,
+    /// The hotkey listener must be replaced.
+    hotkey: bool,
+    /// The model the new settings ask for, when they changed it.
+    model: Option<(ModelManager, Option<Arc<dyn Transcriber>>)>,
+}
+
 /// Main daemon that orchestrates all components
 pub struct Daemon {
     config: Config,
@@ -948,6 +1016,8 @@ pub struct Daemon {
     // so the next duck/restore can serialize against it; see
     // `duck_media_streams` for why capturing originals mid-fade is unsafe.
     media_fade_task: Option<tokio::task::JoinHandle<()>>,
+    // Rebuilds the config for `voxtype reload` (None: reload the config file alone)
+    reloader: Option<Reloader>,
 }
 
 impl Daemon {
@@ -1057,7 +1127,106 @@ impl Daemon {
             paused_media_players: Vec::new(),
             ducked_media_streams: Vec::new(),
             media_fade_task: None,
+            reloader: None,
         }
+    }
+
+    /// Rebuild the config this way on `voxtype reload`, so command-line flags
+    /// given to the daemon keep applying over the file.
+    pub fn with_reloader(mut self, reloader: Reloader) -> Self {
+        self.reloader = Some(reloader);
+        self
+    }
+
+    /// Load the config again and build the model it asks for when that changed.
+    /// Nothing in the running daemon changes here, so an error leaves it as it was.
+    fn prepare_reload(&self) -> std::result::Result<PreparedReload, String> {
+        let mut config = match self.reloader {
+            Some(ref reload) => reload()?,
+            None => crate::config::load_config(self.config_path.as_deref())
+                .map_err(|e| e.to_string())?,
+        };
+        adjust_for_session(&mut config);
+
+        let hotkey =
+            crate::reload::hotkey_settings(&self.config) != crate::reload::hotkey_settings(&config);
+        let model = if crate::reload::model_settings(&self.config)
+            == crate::reload::model_settings(&config)
+        {
+            None
+        } else {
+            // Built before the running model is released, so a model that fails
+            // to load leaves dictation working. Both are in memory for a moment.
+            let mut manager = ModelManager::new(&config.whisper, self.config_path.clone());
+            let mut preloaded: Option<Arc<dyn Transcriber>> = None;
+            if !config.on_demand_loading() {
+                tracing::info!("Loading transcription model: {}", config.model_name());
+                if config.engine == crate::config::TranscriptionEngine::Whisper {
+                    manager
+                        .preload_primary()
+                        .map_err(|e| format!("Model: {}", e))?;
+                } else {
+                    let transcriber = crate::transcribe::create_transcriber(&config)
+                        .map_err(|e| format!("Model: {}", e))?;
+                    preloaded = Some(Arc::from(transcriber));
+                }
+            }
+            Some((manager, preloaded))
+        };
+        Ok(PreparedReload {
+            config,
+            hotkey,
+            model,
+        })
+    }
+
+    /// Swap in a prepared reload. The hotkey listener lives in `run`, which
+    /// replaces it before calling this.
+    fn commit_reload(
+        &mut self,
+        prepared: PreparedReload,
+        transcriber_preloaded: &mut Option<Arc<dyn Transcriber>>,
+        eager_transcriber: &mut Option<Arc<dyn Transcriber>>,
+    ) -> crate::reload::Applied {
+        let PreparedReload {
+            config,
+            hotkey,
+            model,
+        } = prepared;
+        let applied = crate::reload::Applied {
+            hotkey,
+            model: model.is_some(),
+        };
+        if let Some((manager, preloaded)) = model {
+            self.model_manager = Some(manager);
+            *transcriber_preloaded = preloaded;
+            *eager_transcriber = None;
+            if let Some(task) = self.model_load_task.take() {
+                task.abort();
+            }
+            if let Some(task) = self.whisper_prepare_task.take() {
+                task.abort();
+            }
+        }
+
+        // What `new` derives from the config (audio cues, text processing, the
+        // post-process command, VAD, state file paths), built the same way. The
+        // microphone and output chain are read from `self.config` per dictation.
+        let fresh = Daemon::new(config, self.config_path.clone());
+        if fresh.state_file_path != self.state_file_path {
+            if let Some(ref old) = self.state_file_path {
+                cleanup_state_file(old);
+            }
+        }
+        self.state_file_path = fresh.state_file_path;
+        self.meeting_state_file_path = fresh.meeting_state_file_path;
+        self.audio_feedback = fresh.audio_feedback;
+        self.text_processor = fresh.text_processor;
+        self.post_processor = fresh.post_processor;
+        self.vad = fresh.vad;
+        self.config = fresh.config;
+        self.update_state("idle");
+        applied
     }
 
     /// Play audio feedback sound if enabled
@@ -2757,11 +2926,7 @@ impl Daemon {
 
     /// Run the daemon main loop
     pub async fn run(&mut self) -> Result<()> {
-        #[cfg(target_os = "windows")]
-        if self.config.meeting.enabled {
-            tracing::warn!("Meeting mode is unavailable on Windows; disabling it for this daemon");
-            self.config.meeting.enabled = false;
-        }
+        adjust_for_session(&mut self.config);
 
         let lock_path = Config::runtime_dir().join("voxtype.lock");
         // Acquire the Windows singleton before touching shared request or PID
@@ -2783,30 +2948,11 @@ impl Daemon {
         // #450 — the silent v0.6.x to v0.7.0 wrapper-flip incident.
         self.warn_on_variant_mismatch();
 
-        // Streaming dictation types characters at the cursor while the user is
-        // still holding the PTT key. On Wayland compositors backed by libinput
-        // (Hyprland, Sway, River) those synthetic key events clobber the held-
-        // key state tracker, so the physical key release never fires bindrd and
-        // the daemon gets stuck in streaming. Force toggle activation when
-        // streaming is enabled. The user's config file is left untouched; this
-        // override only applies to the running daemon.
-        if self.config.streaming_active()
-            && self.config.hotkey.mode == crate::config::ActivationMode::PushToTalk
-        {
-            tracing::warn!(
-                "Streaming transcription requires toggle activation, not push-to-talk. \
-                 Auto-promoting [hotkey] mode from push_to_talk to toggle for this session. \
-                 Streaming output types characters at the cursor while you dictate; if your \
-                 PTT key is held during typing, libinput-based compositors (Hyprland, Sway, \
-                 River) lose track of the held-key state and the release event never fires. \
-                 Update your config to set [hotkey] mode = \"toggle\" to silence this warning."
-            );
-            self.config.hotkey.mode = crate::config::ActivationMode::Toggle;
-        }
-
         // Clean up any stale cancel and profile override files from previous runs
         cleanup_cancel_file();
         cleanup_profile_override();
+        // A reload request left from before this daemon started has no one waiting.
+        let _ = std::fs::remove_file(crate::reload::request_path(&Config::runtime_dir()));
         #[cfg(target_os = "windows")]
         {
             let runtime = Config::runtime_dir();
@@ -3086,10 +3232,10 @@ impl Daemon {
         // Audio capture (created fresh for each recording)
         let mut audio_capture: Option<Box<dyn AudioCapture>> = None;
 
-        // Recording timeout
-        let max_duration = Duration::from_secs(self.config.audio.max_duration_secs as u64);
+        // Recording timeout (both change on `voxtype reload`)
+        let mut max_duration = Duration::from_secs(self.config.audio.max_duration_secs as u64);
 
-        let activation_mode = self.config.hotkey.mode;
+        let mut activation_mode = self.config.hotkey.mode;
         if self.config.hotkey.enabled {
             let mode_desc = match activation_mode {
                 ActivationMode::PushToTalk => "hold to record, release to transcribe",
@@ -4177,6 +4323,47 @@ impl Daemon {
                     if count.is_multiple_of(600) && matches!(state, State::Idle) {
                         if let Some(ref mut mm) = self.model_manager {
                             mm.evict_idle_models();
+                        }
+                    }
+
+                    // `voxtype reload`, taken only between dictations: a request
+                    // made while dictating waits here until the daemon is idle.
+                    let runtime = Config::runtime_dir();
+                    if state.is_idle() && self.meeting_daemon.is_none() {
+                        if let Some(id) = crate::reload::take_request(&runtime) {
+                            tracing::info!("Reloading settings from the config file");
+                            let outcome = self.prepare_reload().and_then(|prepared| {
+                                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                                let prepared = {
+                                    let mut prepared = prepared;
+                                    if prepared.hotkey {
+                                        // Started before the old one stops, so a key the
+                                        // new listener refuses leaves the old one working.
+                                        let started = start_hotkey_listener(&prepared.config)?;
+                                        // With no listener before or after (built-in hotkey
+                                        // off), there was nothing to restart.
+                                        prepared.hotkey = hotkey_listener.is_some() || started.is_some();
+                                        if let Some(mut old) = hotkey_listener.take() {
+                                            let _ = old.stop();
+                                        }
+                                        (hotkey_listener, hotkey_rx) = match started {
+                                            Some((listener, rx)) => (Some(listener), Some(rx)),
+                                            None => (None, None),
+                                        };
+                                    }
+                                    prepared
+                                };
+                                Ok(self.commit_reload(prepared, &mut transcriber_preloaded, &mut eager_transcriber))
+                            });
+                            match outcome {
+                                Ok(applied) => {
+                                    activation_mode = self.config.hotkey.mode;
+                                    max_duration = Duration::from_secs(self.config.audio.max_duration_secs as u64);
+                                    tracing::info!("{}", applied.describe());
+                                }
+                                Err(ref e) => tracing::warn!("Settings not applied: {}", e),
+                            }
+                            crate::reload::answer(&runtime, &id, &outcome);
                         }
                     }
 

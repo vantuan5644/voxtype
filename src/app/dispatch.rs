@@ -15,6 +15,7 @@ use super::info::run_device_names;
 use super::info::run_info_command;
 use super::meeting::run_meeting_command;
 use super::record::send_record_command;
+use super::reload::run_reload;
 use super::status::run_status;
 use super::transcribe_file::transcribe_file;
 use super::updates::check_for_updates;
@@ -54,7 +55,7 @@ fn warn_if_root(command_name: &str) -> bool {
 /// flags; `send_record_command` needs it so a subcommand-level `--model`
 /// can still defer to the global flag.
 pub(crate) async fn dispatch(
-    cli: Cli,
+    mut cli: Cli,
     config_path: Option<PathBuf>,
     mut config: config::Config,
     top_level_model: Option<String>,
@@ -75,9 +76,18 @@ pub(crate) async fn dispatch(
     let default_command = Commands::Daemon;
 
     // Run the appropriate command
-    match cli.command.unwrap_or(default_command) {
+    match cli.command.take().unwrap_or(default_command) {
         Commands::Daemon => {
-            let mut daemon = daemon::Daemon::new(config, config_path);
+            // `voxtype reload` reads the file again and applies this command
+            // line's flags over it, as they were at start.
+            let reload_cli = cli;
+            let reloader: daemon::Reloader = Box::new(move || {
+                let mut config =
+                    config::load_config(reload_cli.config.as_deref()).map_err(|e| e.to_string())?;
+                super::overrides::apply_cli_overrides(&mut config, &reload_cli);
+                Ok(config)
+            });
+            let mut daemon = daemon::Daemon::new(config, config_path).with_reloader(reloader);
             daemon.run().await?;
         }
         #[cfg(target_os = "macos")]
@@ -440,6 +450,10 @@ pub(crate) async fn dispatch(
 
         Commands::Record { action } => {
             send_record_command(&config, action, top_level_model.as_deref())?;
+        }
+
+        Commands::Reload { timeout } => {
+            run_reload(timeout)?;
         }
 
         Commands::Meeting { action } => {

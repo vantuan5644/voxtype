@@ -164,6 +164,26 @@ pub enum Commands {
         action: RecordAction,
     },
 
+    /// Apply config.toml to the running daemon without restarting it
+    ///
+    /// The daemon applies the file between dictations: a request made while
+    /// dictating waits until the dictation is done. Hotkey, microphone, model,
+    /// output and text settings take effect; the model is reloaded only when
+    /// engine or model settings changed. Settings that fail to load (an unknown
+    /// key name, a missing model) leave the running settings as they were.
+    ///
+    /// Exit status: 0 applied, 1 not applied (see the message) or no daemon
+    /// running, 3 no answer within --timeout (the request is withdrawn).
+    ///
+    /// Examples:
+    ///   voxtype config set hotkey.key RIGHTALT && voxtype reload
+    ///   voxtype reload --timeout 60
+    Reload {
+        /// Seconds to wait for the daemon to apply the settings
+        #[arg(long, default_value_t = 30, value_name = "SECONDS")]
+        timeout: u64,
+    },
+
     /// Meeting transcription mode
     ///
     /// Continuous meeting transcription with chunked processing,

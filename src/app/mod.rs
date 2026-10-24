@@ -3,7 +3,7 @@
 //! `app::run(cli, config_path, config).await`.
 //!
 //! The rest of this module is organised by subcommand — each long handler
-//! lives in its own file (`record.rs`, `status.rs`, `meeting.rs`,
+//! lives in its own file (`record.rs`, `reload.rs`, `status.rs`, `meeting.rs`,
 //! `transcribe_file.rs`, `info.rs`, `config_show.rs`, `config_set.rs`,
 //! `config_get.rs`, `config_schema.rs`,
 //! `updates.rs`, `macos.rs`). Shared binary-side plumbing lives in
@@ -27,6 +27,7 @@ mod macos;
 mod meeting;
 mod overrides;
 mod record;
+mod reload;
 pub(crate) mod sigpipe;
 mod status;
 mod transcribe_file;

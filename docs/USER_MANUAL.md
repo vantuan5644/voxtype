@@ -363,6 +363,19 @@ For persistent file output without the CLI flag, use `mode = "file"` with `file_
 
 This command is designed for use with compositor keybindings (Hyprland, Sway) instead of the built-in hotkey detection. See [Compositor Keybindings](#compositor-keybindings) for setup instructions.
 
+### `voxtype reload`
+
+Apply changes to `config.toml` without restarting the daemon.
+
+```bash
+voxtype config set hotkey.key RIGHTALT && voxtype reload
+voxtype reload --timeout 60     # wait up to 60 seconds for an answer (default 30)
+```
+
+The daemon takes the request only while idle, so a dictation in progress finishes first. Hotkey, microphone, model, output and text settings take effect. The hotkey listener is restarted only when hotkey settings changed, and the model is reloaded only when engine or model settings changed. The daemon builds the new listener and model before it swaps anything, so a config that fails to load (an unknown key name, a missing model) leaves the running settings as they were. Flags given to `voxtype daemon` keep applying over the file.
+
+Exit status: `0` applied, `1` not applied (the message says why) or no daemon running, `3` no answer within `--timeout`. On `3` the request is withdrawn; a daemon older than this command never answers, so restart it instead.
+
 ### `voxtype meeting`
 
 Continuous meeting transcription with chunked processing and speaker diarization. See [Meeting Mode](#meeting-mode) for full details.
