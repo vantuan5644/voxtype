@@ -25,6 +25,8 @@ use tokio::sync::mpsc;
 
 /// Trait for audio capture implementations
 #[async_trait::async_trait]
+// async_trait marks each method #[must_use] over a future that already is.
+#[allow(clippy::double_must_use)]
 pub trait AudioCapture: Send + Sync {
     /// Start capturing audio
     /// Returns a channel receiver for audio chunks (f32 samples, mono, 16kHz)
